@@ -611,31 +611,6 @@ def main() -> None:
         save_flow_batch(flow, flow_npz, seed=args.seed)
         print(f"  saved flow draws → {flow_npz}")
     print(f"  predicted ρ = {flow.target_rho:.4f} g/cm³")
-    if flow.shape_probabilities is not None:
-        if flow.neural_shape_probabilities is not None:
-            neural = ", ".join(
-                f"q{i}={prob:.3f}"
-                for i, prob in enumerate(flow.neural_shape_probabilities)
-            )
-            print(f"  neural shape probabilities: {neural}")
-        if flow.retrieval_shape_probabilities is not None:
-            retrieval = ", ".join(
-                f"q{i}={prob:.3f}"
-                for i, prob in enumerate(flow.retrieval_shape_probabilities)
-            )
-            print(
-                f"  retrieval shape prior (confidence={flow.retrieval_confidence:.3f}): "
-                f"{retrieval}"
-            )
-        probs = ", ".join(
-            f"q{i}={prob:.3f}" for i, prob in enumerate(flow.shape_probabilities)
-        )
-        counts = np.bincount(
-            flow.sampled_shape_bins,
-            minlength=len(flow.shape_probabilities),
-        )
-        print(f"  blended shape probabilities: {probs}")
-        print(f"  sampled shape bins: {counts.tolist()}")
     lam = np.exp(flow.all_log_lambda)
     print(
         f"  λ range (Å): [{lam.min():.2f}, {lam.max():.2f}]  "

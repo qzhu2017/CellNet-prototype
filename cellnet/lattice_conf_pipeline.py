@@ -39,7 +39,6 @@ from cellnet.inference import (
 )
 from cellnet.models import GivenHZConditionalLatticeFlowGNN
 from cellnet.qrs import QRSConfig, _config_to_dict, qrs_search_cellpar
-from cellnet.retrieval import ShapeBinRetrievalIndex
 from cellnet.sequential import (
     compute_log_reciprocal_successive_minima,
     compute_log_successive_minima,
@@ -47,7 +46,6 @@ from cellnet.sequential import (
     denorm_log_reciprocal_lambda,
     denorm_selling_log1p,
     sample_k_given_hz_conditional_lattice_flow,
-    sample_k_given_hz_lattice_flow,
     split_lattice_flow_norm,
 )
 from cellnet.symmetry import (
@@ -109,27 +107,6 @@ def save_flow_batch(
         zprime=flow.zprime,
         smiles=flow.smiles,
         seed=np.int64(-1 if seed is None else seed),
-        shape_probabilities=(
-            flow.shape_probabilities
-            if flow.shape_probabilities is not None
-            else np.empty((0,), dtype=np.float64)
-        ),
-        sampled_shape_bins=(
-            flow.sampled_shape_bins
-            if flow.sampled_shape_bins is not None
-            else np.empty((0,), dtype=np.int64)
-        ),
-        neural_shape_probabilities=(
-            flow.neural_shape_probabilities
-            if flow.neural_shape_probabilities is not None
-            else np.empty((0,), dtype=np.float64)
-        ),
-        retrieval_shape_probabilities=(
-            flow.retrieval_shape_probabilities
-            if flow.retrieval_shape_probabilities is not None
-            else np.empty((0,), dtype=np.float64)
-        ),
-        retrieval_confidence=np.float64(flow.retrieval_confidence),
         axis_rank_permutation=np.asarray(flow.axis_rank_permutation, dtype=np.int64),
         all_axis_rank_permutations=(
             flow.all_axis_rank_permutations
@@ -164,33 +141,6 @@ def load_flow_batch(path: str | Path) -> FlowSampleBatch:
         all_log_lambda=np.asarray(data["all_log_lambda"]),
         all_log_lambda_recip=np.asarray(data["all_log_lambda_recip"]),
         k=k,
-        shape_probabilities=(
-            np.asarray(data["shape_probabilities"])
-            if "shape_probabilities" in data and data["shape_probabilities"].size
-            else None
-        ),
-        sampled_shape_bins=(
-            np.asarray(data["sampled_shape_bins"], dtype=np.int64)
-            if "sampled_shape_bins" in data and data["sampled_shape_bins"].size
-            else None
-        ),
-        neural_shape_probabilities=(
-            np.asarray(data["neural_shape_probabilities"])
-            if "neural_shape_probabilities" in data
-            and data["neural_shape_probabilities"].size
-            else None
-        ),
-        retrieval_shape_probabilities=(
-            np.asarray(data["retrieval_shape_probabilities"])
-            if "retrieval_shape_probabilities" in data
-            and data["retrieval_shape_probabilities"].size
-            else None
-        ),
-        retrieval_confidence=(
-            float(data["retrieval_confidence"])
-            if "retrieval_confidence" in data
-            else 0.0
-        ),
         axis_rank_permutation=(
             tuple(int(value) for value in data["axis_rank_permutation"])
             if "axis_rank_permutation" in data
@@ -227,11 +177,6 @@ class FlowSampleBatch:
     all_log_lambda: np.ndarray
     all_log_lambda_recip: np.ndarray
     k: int
-    shape_probabilities: np.ndarray | None = None
-    sampled_shape_bins: np.ndarray | None = None
-    neural_shape_probabilities: np.ndarray | None = None
-    retrieval_shape_probabilities: np.ndarray | None = None
-    retrieval_confidence: float = 0.0
     axis_rank_permutation: tuple[int, int, int] = (0, 1, 2)
     all_axis_rank_permutations: np.ndarray | None = None
     axis_permutation_probabilities: np.ndarray | None = None
@@ -644,36 +589,9 @@ def sample_flow_batch(
 
     dev = device or next(model.parameters()).device
     batch, hall_t, zprime_t = _prepare_batch(stats, smiles, hall_number, zprime, dev)
-    retrieval_probs = None
-    retrieval_confidence = 0.0
-    if isinstance(model, GivenHZConditionalLatticeFlowGNN):
-        samples_norm, pred_ld = sample_k_given_hz_conditional_lattice_flow(
-            model, batch, hall_t, zprime_t, k=k
-        )
-    else:
-        shape_prior = None
-        shape_index_path = Path(checkpoint).resolve().parent / "shape_retrieval_index.pkl"
-        if getattr(model, "shape_head", None) is not None and shape_index_path.is_file():
-            shape_index = ShapeBinRetrievalIndex.load(shape_index_path)
-            retrieval_probs, retrieval_confidence, _ = shape_index.query(
-                smiles, hall_number, zprime
-            )
-            shape_prior = torch.as_tensor(
-                retrieval_probs, device=dev, dtype=torch.float32
-            )
-        retrieval_weight = (
-            float(model_args.get("shape_retrieval_blend", 0.85))
-            * retrieval_confidence
-        )
-        samples_norm, pred_ld = sample_k_given_hz_lattice_flow(
-            model,
-            batch,
-            hall_t,
-            zprime_t,
-            k=k,
-            shape_prior=shape_prior,
-            shape_prior_weight=retrieval_weight,
-        )
+    samples_norm, pred_ld = sample_k_given_hz_conditional_lattice_flow(
+        model, batch, hall_t, zprime_t, k=k
+    )
 
     pred_ld_norm = float(pred_ld.squeeze(0).cpu().numpy())
     target_rho = float(denorm_log_density(pred_ld_norm, stats))
@@ -691,9 +609,6 @@ def sample_flow_batch(
         all_log_lambda, target_volume, cr_cfg, stats=stats
     )
 
-    shape_probabilities = getattr(model, "_last_shape_probabilities", None)
-    neural_shape_probabilities = getattr(model, "_last_neural_shape_probabilities", None)
-    sampled_shape_bins = getattr(model, "_last_sampled_shape_bins", None)
     axis_logits = getattr(model, "_last_axis_permutation_logits", None)
     if axis_logits is not None:
         raw_axis_probs = torch.softmax(axis_logits, dim=-1).squeeze(0).cpu().numpy()
@@ -733,23 +648,6 @@ def sample_flow_batch(
         all_log_lambda=all_log_lambda,
         all_log_lambda_recip=all_log_lambda_recip,
         k=k,
-        shape_probabilities=(
-            shape_probabilities.squeeze(0).cpu().numpy()
-            if shape_probabilities is not None
-            else None
-        ),
-        sampled_shape_bins=(
-            sampled_shape_bins.squeeze(0).cpu().numpy()
-            if sampled_shape_bins is not None
-            else None
-        ),
-        neural_shape_probabilities=(
-            neural_shape_probabilities.squeeze(0).cpu().numpy()
-            if neural_shape_probabilities is not None
-            else None
-        ),
-        retrieval_shape_probabilities=retrieval_probs,
-        retrieval_confidence=retrieval_confidence,
         axis_rank_permutation=axis_ranks,
         all_axis_rank_permutations=all_axis_ranks,
         axis_permutation_probabilities=axis_probs,

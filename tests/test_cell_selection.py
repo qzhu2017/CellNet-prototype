@@ -1,3 +1,5 @@
+"""Cell-blind cell selection: target-free quotas, candidate filters and diversity."""
+
 import inspect
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,7 +9,9 @@ import numpy as np
 from cellnet.lattice_conf_pipeline import (
     LatticeQRSRecord,
     UniqueCellRecord,
+    _lattice_qrs_candidate_indices,
     run_conf_qrs_one,
+    select_diverse_unique_cells,
     select_target_free_quota_unique_cells,
     unique_cell_is_qrs_origin,
     unique_cell_is_sell_only,
@@ -234,3 +238,61 @@ def test_reference_matching_can_be_disabled_without_losing_csd_template(monkeypa
     assert calls["template"][3]["db_path"] == Path(tmp_path) / "template.db"
     assert calls["sites"] is template
     assert "ref_pmg" not in calls["run"]
+
+
+def test_extreme_lattice_qrs_draws_are_skipped():
+    lam = np.array(
+        [
+            [5.0, 10.0, 25.0],
+            [3.98, 15.95, 36.67],
+            [6.0, 8.0, 24.0],
+        ]
+    )
+    selected, skipped = _lattice_qrs_candidate_indices(np.log(lam), 8.0)
+    assert selected == [0, 2]
+    assert skipped[0][0] == 1
+    assert skipped[0][1] > 9.0
+
+    selected, skipped = _lattice_qrs_candidate_indices(np.log(lam), 0.0)
+    assert selected == [0, 1, 2]
+    assert skipped == []
+
+
+def _record(idx: int, cellpar: list[float], loss: float, support: int = 1):
+    qrs = [
+        LatticeQRSRecord(
+            flow_idx=idx + j,
+            cellpar=np.asarray(cellpar, dtype=np.float64),
+            qrs_loss=loss + 0.01 * j,
+            density=1.2,
+            lambda_mse=0.0,
+            lambda_recip_mse=0.0,
+        )
+        for j in range(support)
+    ]
+    unique = UniqueCellRecord(
+        dedup_idx=idx,
+        source_flow_indices=[record.flow_idx for record in qrs],
+        cellpar=np.asarray(cellpar, dtype=np.float64),
+    )
+    return unique, qrs
+
+
+def test_diverse_selection_keeps_quality_and_rare_shape():
+    specs = [
+        ([8.0, 9.0, 10.0, 90.0, 90.0, 90.0], 0.10),
+        ([8.1, 9.1, 10.1, 90.0, 90.0, 90.0], 0.11),
+        ([7.9, 8.9, 10.2, 90.0, 90.0, 90.0], 0.12),
+        ([5.8, 7.4, 24.7, 90.0, 92.0, 90.0], 0.20),
+    ]
+    unique_cells = []
+    records = []
+    for idx, (cellpar, loss) in enumerate(specs):
+        unique, recs = _record(idx, cellpar, loss)
+        unique_cells.append(unique)
+        records.extend(recs)
+
+    selected = select_diverse_unique_cells(unique_cells, records, max_cells=2)
+    selected_ids = {cell.dedup_idx for cell in selected}
+    assert 0 in selected_ids  # best-QRS seed
+    assert 3 in selected_ids  # distinct elongated shape

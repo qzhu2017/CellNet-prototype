@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """
-Train lattice-flow GNN models on SPaDe-CSP data.
+Train the conditional lattice flow (Selling flow, then a λ flow conditioned on Selling).
 
-Models:
-  - given_hz_lattice_flow_gnn: joint 12-d flow (Selling + log λ + log λ*)
-  - given_hz_conditional_lattice_flow_gnn: Selling flow, then conditional λ flow
+Usually called through scripts/train_flow.py, which sets the defaults of the released model.
 
 Example:
   python scripts/train.py --model given_hz_conditional_lattice_flow_gnn --csv datasets/spade-csp/spade_train_precomputed.csv
@@ -34,15 +32,10 @@ from cellnet.data import (
     attach_selling_targets,
     compute_stats,
     graphify_samples,
-    load_hem_database,
 )
-from cellnet.metrics import (
-    given_hz_conditional_lattice_flow_loss,
-    given_hz_lattice_flow_loss,
-)
-from cellnet.models import GivenHZConditionalLatticeFlowGNN, GivenHZLatticeFlowGNN
+from cellnet.metrics import given_hz_conditional_lattice_flow_loss
+from cellnet.models import GivenHZConditionalLatticeFlowGNN
 from cellnet.polymorph import SellingPolymorphBank
-from cellnet.rare_shapes import RareShapeWeighter
 from cellnet.precomputed import (
     HybridGraphStore,
     ShardGroupedBatchSampler,
@@ -52,7 +45,6 @@ from cellnet.precomputed import (
     precomputed_graphs_path,
     sharded_graphs_meta_path,
 )
-from cellnet.retrieval import ShapeBinRetrievalIndex
 from cellnet.splits import split_by_smiles_group
 from cellnet.spade import load_structure_csv
 
@@ -72,23 +64,10 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
 
 
-def is_gnn_model(model_name: str) -> bool:
-    return model_name.endswith("_gnn")
+MODEL_NAME = "given_hz_conditional_lattice_flow_gnn"
 
 
-def uses_given_hz_lattice_flow(model_name: str) -> bool:
-    return model_name == "given_hz_lattice_flow_gnn"
-
-
-def uses_given_hz_conditional_lattice_flow(model_name: str) -> bool:
-    return model_name == "given_hz_conditional_lattice_flow_gnn"
-
-
-def uses_given_hz_lattice_flow_any(model_name: str) -> bool:
-    return uses_given_hz_lattice_flow(model_name) or uses_given_hz_conditional_lattice_flow(model_name)
-
-
-def get_batch_tensors(batch, device, gnn: bool):
+def get_batch_tensors(batch, device):
     batch = batch.to(device)
     return (
         batch,
@@ -99,55 +78,24 @@ def get_batch_tensors(batch, device, gnn: bool):
     )
 
 
-def build_model(name: str, stats, args):
-    gnn_common = dict(
+def build_model(stats, args) -> GivenHZConditionalLatticeFlowGNN:
+    return GivenHZConditionalLatticeFlowGNN(
         node_dim=stats.n_node_features,
         edge_dim=stats.n_edge_features,
+        selling_dim=stats.selling_dim,
+        lambda_dim=int(stats.log_lambda_dim + stats.log_lambda_recip_dim),
         n_halls=stats.n_halls,
         n_zprimes=stats.n_zprimes,
         hidden_dim=args.hidden_dim,
         gnn_layers=args.gnn_layers,
         dropout=args.dropout,
-    )
-    if name == "given_hz_lattice_flow_gnn":
-        gnn_ps = {**gnn_common, "dropout": args.dropout}
-        return (
-            GivenHZLatticeFlowGNN(
-                **gnn_ps,
-                lattice_flow_dim=stats.lattice_flow_dim,
-                flow_steps=args.flow_steps,
-                gnn_pooling=args.gnn_pooling,
-                n_shape_bins=args.shape_bins,
-                shape_emb_dim=args.shape_emb_dim,
-                shape_exploration=args.shape_exploration,
-                predict_axis_permutation=args.w_axis_permutation > 0.0,
-            ),
-            "lattice_flow",
-            "lattice_flow",
-        )
-    if name == "given_hz_conditional_lattice_flow_gnn":
-        gnn_ps = {**gnn_common, "dropout": args.dropout}
-        lambda_dim = int(stats.log_lambda_dim + stats.log_lambda_recip_dim)
-        return (
-            GivenHZConditionalLatticeFlowGNN(
-                **gnn_ps,
-                selling_dim=stats.selling_dim,
-                lambda_dim=lambda_dim,
-                flow_steps=args.flow_steps,
-                gnn_pooling=args.gnn_pooling,
-                predict_axis_permutation=args.w_axis_permutation > 0.0,
-            ),
-            "lattice_flow",
-            "lattice_flow",
-        )
-    raise ValueError(
-        f"Unknown model: {name!r}; "
-        "expected given_hz_lattice_flow_gnn or given_hz_conditional_lattice_flow_gnn"
+        flow_steps=args.flow_steps,
+        gnn_pooling=args.gnn_pooling,
+        predict_axis_permutation=args.w_axis_permutation > 0.0,
     )
 
 
 def _compute_lattice_loss(
-    model_name: str,
     model,
     x,
     y,
@@ -158,7 +106,6 @@ def _compute_lattice_loss(
     args,
     polymorph_bank,
     batch,
-    gnn: bool,
     device: torch.device,
 ):
     s_mean = torch.as_tensor(stats.selling_mean, device=device, dtype=torch.float32)
@@ -168,35 +115,10 @@ def _compute_lattice_loss(
     lam_r_mean = torch.as_tensor(stats.log_lambda_recip_mean, device=device, dtype=torch.float32)
     lam_r_std = torch.as_tensor(stats.log_lambda_recip_std, device=device, dtype=torch.float32)
     poly_lat, poly_ld = _lattice_polymorph_tensors(
-        polymorph_bank, batch, gnn, hall, zprime, stats, device,
+        polymorph_bank, batch, hall, zprime, stats, device,
         fallback_lattice=y, fallback_log_density=log_density,
     )
-    sample_weight = _batch_lattice_weight(batch, gnn, device)
-    axis_permutation_mask = _batch_axis_permutation_mask(batch, gnn, device)
-    if uses_given_hz_lattice_flow(model_name):
-        shape_bin = _batch_lattice_shape_bin(batch, gnn, device)
-        out = model(x, hall, zprime, x1=y, shape_bin=shape_bin)
-        loss, _ = given_hz_lattice_flow_loss(
-            out, y, log_density, s_mean, s_std, lam_mean, lam_std, lam_r_mean, lam_r_std,
-            selling_dim=stats.selling_dim,
-            log_lambda_dim=stats.log_lambda_dim,
-            w_flow=args.w_flow,
-            w_s=args.w_volume,
-            w_density=args.w_density,
-            w_lambda=args.w_lambda,
-            w_lambda_recip=args.w_lambda_recip,
-            lambda_loss_mode=args.lambda_loss_mode,
-            w_lambda_relative=args.w_lambda_relative,
-            w_lambda_product=args.w_lambda_product,
-            polymorph_lattice=poly_lat,
-            polymorph_log_density=poly_ld,
-            sample_weight=sample_weight,
-            target_shape_bin=shape_bin,
-            w_shape_bin=args.w_shape_bin,
-            target_axis_permutation_mask=axis_permutation_mask,
-            w_axis_permutation=args.w_axis_permutation,
-        )
-        return loss
+    axis_permutation_mask = _batch_axis_permutation_mask(batch, device)
     out = model(x, hall, zprime, x1=y)
     loss, _ = given_hz_conditional_lattice_flow_loss(
         out, y, log_density, s_mean, s_std, lam_mean, lam_std, lam_r_mean, lam_r_std,
@@ -213,51 +135,21 @@ def _compute_lattice_loss(
         w_lambda_product=args.w_lambda_product,
         polymorph_lattice=poly_lat,
         polymorph_log_density=poly_ld,
-        sample_weight=sample_weight,
         target_axis_permutation_mask=axis_permutation_mask,
         w_axis_permutation=args.w_axis_permutation,
     )
     return loss
 
 
-def _batch_smiles(batch, gnn: bool) -> list[str]:
-    if gnn:
-        return list(batch.smiles)
-    return list(batch["smiles"])
-
-
-def _batch_lattice_weight(batch, gnn: bool, device: torch.device) -> torch.Tensor | None:
-    if gnn and hasattr(batch, "lattice_weight"):
-        return batch.lattice_weight.view(-1).to(device)
-    if not gnn and "lattice_weight" in batch:
-        return batch["lattice_weight"].view(-1).to(device)
-    return None
-
-
-def _batch_lattice_shape_bin(batch, gnn: bool, device: torch.device) -> torch.Tensor | None:
-    if gnn and hasattr(batch, "lattice_shape_bin"):
-        return batch.lattice_shape_bin.view(-1).to(device)
-    if not gnn and "lattice_shape_bin" in batch:
-        return batch["lattice_shape_bin"].view(-1).to(device)
-    return None
-
-
-def _batch_axis_permutation_mask(
-    batch,
-    gnn: bool,
-    device: torch.device,
-) -> torch.Tensor | None:
-    if gnn and hasattr(batch, "axis_permutation_mask"):
+def _batch_axis_permutation_mask(batch, device: torch.device) -> torch.Tensor | None:
+    if hasattr(batch, "axis_permutation_mask"):
         return batch.axis_permutation_mask.view(-1, 6).to(device)
-    if not gnn and "axis_permutation_mask" in batch:
-        return batch["axis_permutation_mask"].view(-1, 6).to(device)
     return None
 
 
 def _lattice_polymorph_tensors(
     polymorph_bank: SellingPolymorphBank | None,
     batch,
-    gnn: bool,
     hall: torch.Tensor,
     zprime: torch.Tensor,
     stats,
@@ -268,7 +160,7 @@ def _lattice_polymorph_tensors(
     if polymorph_bank is None:
         return None, None
     return polymorph_bank.batch_lattice_tensors(
-        _batch_smiles(batch, gnn),
+        list(batch.smiles),
         hall,
         zprime,
         stats.idx_to_hall,
@@ -284,7 +176,6 @@ def train_epoch(
     loader,
     optimizer,
     device,
-    model_name,
     stats=None,
     args=None,
     polymorph_bank: SellingPolymorphBank | None = None,
@@ -292,7 +183,6 @@ def train_epoch(
     show_progress: bool = True,
 ):
     model.train()
-    gnn = is_gnn_model(model_name)
     totals = []
     desc = f"Train epoch {epoch}" if epoch is not None else "Train"
     batch_iter = tqdm(
@@ -306,11 +196,11 @@ def train_epoch(
         mininterval=0.2,
     )
     for batch in batch_iter:
-        x, y, hall, zprime, log_density = get_batch_tensors(batch, device, gnn)
+        x, y, hall, zprime, log_density = get_batch_tensors(batch, device)
         optimizer.zero_grad()
         loss = _compute_lattice_loss(
-            model_name, model, x, y, hall, zprime, log_density,
-            stats, args, polymorph_bank, batch, gnn, device,
+            model, x, y, hall, zprime, log_density,
+            stats, args, polymorph_bank, batch, device,
         )
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -323,9 +213,8 @@ def train_epoch(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train CellNet models")
-    parser.add_argument("--db", type=str, default=str(ROOT / "HEM.db"))
-    parser.add_argument("--csv", type=str, default=None, help="Training CSV (HEM or SPaDe format)")
+    parser = argparse.ArgumentParser(description="Train the CellNet conditional lattice flow")
+    parser.add_argument("--csv", type=str, required=True, help="Training CSV (SPaDe format, raw or precomputed)")
     parser.add_argument("--test-csv", type=str, default=None, help="Held-out test CSV (SPaDe split)")
     parser.add_argument(
         "--precomputed-graphs",
@@ -368,20 +257,11 @@ def main():
         default=4,
         help="Number of graph shards (~10k graphs each) to keep in RAM",
     )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default="given_hz_lattice_flow_gnn",
-        choices=[
-            "given_hz_lattice_flow_gnn",
-            "given_hz_conditional_lattice_flow_gnn",
-        ],
-    )
+    parser.add_argument("--model", type=str, default=MODEL_NAME, choices=[MODEL_NAME])
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--hidden-dim", type=int, default=512)
-    parser.add_argument("--n-layers", type=int, default=3)
     parser.add_argument("--dropout", type=float, default=0.3)
     parser.add_argument("--weight-decay", type=float, default=1e-3)
     parser.add_argument("--patience", type=int, default=10, help="Early stopping patience (epochs)")
@@ -392,7 +272,6 @@ def main():
         default="mean",
         help="Graph pooling; multiscale keeps molecular size/extent via mean+sum+max",
     )
-    parser.add_argument("--latent-dim", type=int, default=64)
     parser.add_argument("--val-frac", type=float, default=0.1)
     parser.add_argument("--test-frac", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
@@ -434,37 +313,6 @@ def main():
         help="Fine-tune only lambda_flow_head (keep encoder/Selling/axis frozen)",
     )
     parser.add_argument(
-        "--rare-shape-max-weight",
-        type=float,
-        default=1.0,
-        help="Maximum conditional-quantile weight on lattice flow loss (1 disables)",
-    )
-    parser.add_argument(
-        "--rare-shape-weight-power",
-        type=float,
-        default=2.0,
-        help="Tail emphasis exponent for rare lattice-shape weighting",
-    )
-    parser.add_argument(
-        "--shape-bins",
-        type=int,
-        default=0,
-        help="Conditional anisotropy-quantile bins for joint lattice flow (0 disables)",
-    )
-    parser.add_argument("--shape-emb-dim", type=int, default=16)
-    parser.add_argument(
-        "--shape-exploration",
-        type=float,
-        default=0.10,
-        help="Uniform probability mixed into predicted shape-bin sampling",
-    )
-    parser.add_argument(
-        "--w-shape-bin",
-        type=float,
-        default=0.3,
-        help="Auxiliary anisotropy-bin classification loss weight",
-    )
-    parser.add_argument(
         "--w-axis-permutation",
         type=float,
         default=0.3,
@@ -472,13 +320,6 @@ def main():
             "Hall-aware orthorhombic axis-assignment classification weight "
             "(0 disables the prediction head)"
         ),
-    )
-    parser.add_argument("--shape-retrieval-k", type=int, default=16)
-    parser.add_argument(
-        "--shape-retrieval-blend",
-        type=float,
-        default=0.85,
-        help="Maximum retrieval-prior blend at inference (0 disables index)",
     )
     parser.add_argument(
         "--split-by-smiles",
@@ -545,10 +386,6 @@ def main():
     )
     print(f"Device: {device}")
 
-    use_gnn = True
-    if not is_gnn_model(args.model):
-        raise ValueError(f"Only GNN lattice-flow models are supported: {args.model}")
-
     def _load_csv_samples(
         csv_path: str,
         graphs_path: str | None,
@@ -573,15 +410,9 @@ def main():
         return loaded, False
 
     # Load data
-    samples_precomputed = False
-    if args.csv:
-        samples, samples_precomputed = _load_csv_samples(
-            args.csv, args.precomputed_graphs, "training samples"
-        )
-    else:
-        print("Loading HEM.db ...")
-        samples = graphify_samples(load_hem_database(args.db, max_samples=args.max_samples))
-        print(f"Loaded {len(samples)} training samples")
+    samples, samples_precomputed = _load_csv_samples(
+        args.csv, args.precomputed_graphs, "training samples"
+    )
 
     test_list: list = []
     test_precomputed = False
@@ -653,29 +484,6 @@ def main():
         test_list = [samples[i] for i in test_samples.indices]
         print(f"Random split: train={len(train_list)} val={len(val_list)} test={len(test_list)}")
 
-    if uses_given_hz_lattice_flow_any(args.model) and (
-        args.rare_shape_max_weight > 1.0 or args.shape_bins > 1
-    ):
-        shape_weighter = RareShapeWeighter.fit(
-            train_list,
-            max_weight=args.rare_shape_max_weight,
-            power=args.rare_shape_weight_power,
-        )
-        train_weights = shape_weighter.assign(train_list, n_bins=args.shape_bins)
-        val_weights = shape_weighter.assign(val_list, n_bins=args.shape_bins)
-        shape_weighter.assign(test_list, n_bins=args.shape_bins)
-        print(
-            "Rare-shape flow weighting: "
-            f"train mean={train_weights.mean():.3f} max={train_weights.max():.3f}; "
-            f"val mean={val_weights.mean():.3f} max={val_weights.max():.3f}"
-        )
-        if args.shape_bins > 1:
-            counts = np.bincount(
-                [sample.lattice_shape_bin for sample in train_list],
-                minlength=args.shape_bins,
-            )
-            print(f"Conditional anisotropy bins ({args.shape_bins}): {counts.tolist()}")
-
     # Build label vocab from all splits; normalize continuous targets from train only
     vocab_samples = samples + test_list if test_list else samples
     all_halls = sorted({s.hall_number for s in vocab_samples})
@@ -705,40 +513,6 @@ def main():
             f"Polymorph best-of-K loss: {polymorph_bank.n_groups} (S,H,Z′) groups with >1 packing, "
             f"{polymorph_bank.n_polymorph_structures} train structures"
         )
-
-    shape_retrieval_index = None
-    if (
-        uses_given_hz_lattice_flow(args.model)
-        and args.shape_bins > 1
-        and args.shape_retrieval_blend > 0.0
-    ):
-        shape_index_path = (
-            Path(args.output_dir) / args.model / "shape_retrieval_index.pkl"
-        )
-        if shape_index_path.is_file():
-            try:
-                cached = ShapeBinRetrievalIndex.load(shape_index_path)
-                if (
-                    cached.n_bins == args.shape_bins
-                    and len(cached.smiles) == len(train_list)
-                    and getattr(cached, "descriptors", None) is not None
-                ):
-                    shape_retrieval_index = cached
-                    print(
-                        f"Loaded shape retrieval index: {len(cached.smiles)} references"
-                    )
-            except Exception as exc:
-                print(f"Rebuilding incompatible shape retrieval index: {exc}")
-        if shape_retrieval_index is None:
-            print(
-                f"Building Hall/Z′ shape retrieval index "
-                f"(k={args.shape_retrieval_k}) ..."
-            )
-            shape_retrieval_index = ShapeBinRetrievalIndex.build(
-                train_list,
-                n_bins=args.shape_bins,
-                k=args.shape_retrieval_k,
-            )
 
     target_mode = "lattice_flow"
 
@@ -888,7 +662,8 @@ def main():
     test_loader = PyGDataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
     # Model
-    model, target_mode, target_key = build_model(args.model, stats, args)
+    model = build_model(stats, args)
+    target_key = target_mode
     model = model.to(device)
     if args.init_checkpoint:
         ckpt = torch.load(args.init_checkpoint, map_location=device, weights_only=False)
@@ -927,11 +702,6 @@ def main():
     out_dir = Path(args.output_dir) / args.model
     out_dir.mkdir(parents=True, exist_ok=True)
     stats.save(out_dir / "stats.json")
-    if shape_retrieval_index is not None:
-        shape_retrieval_index.save(out_dir / "shape_retrieval_index.pkl")
-        (out_dir / "shape_retrieval_metadata.json").write_text(
-            json.dumps(shape_retrieval_index.metadata(), indent=2)
-        )
 
     best_val = float("inf")
     patience_counter = 0
@@ -939,7 +709,6 @@ def main():
 
     if (
         device.type == "cuda"
-        and use_gnn
         and not args.no_cuda_warmup
         and train_batch_sampler is None
     ):
@@ -954,7 +723,7 @@ def main():
             warm_batch = next(iter(warm_loader))
             t_load = time.time()
             print(f"  CUDA warmup: batch loaded in {t_load - t_warm:.1f}s, running forward ...", flush=True)
-            x, y, hall, zprime, log_density = get_batch_tensors(warm_batch, device, True)
+            x, y, hall, zprime, log_density = get_batch_tensors(warm_batch, device)
             model(x, hall, zprime, x1=y)
             torch.cuda.synchronize()
         model.train()
@@ -965,7 +734,6 @@ def main():
             train_batch_sampler.set_epoch(epoch)
         train_loss = train_epoch(
             model, train_loader, optimizer, device,
-            args.model,
             stats=stats, args=args, polymorph_bank=polymorph_bank,
             epoch=epoch, show_progress=not args.no_progress,
         )
@@ -976,10 +744,10 @@ def main():
         val_losses = []
         with torch.no_grad():
             for batch in val_loader:
-                x, y, hall, zprime, log_density = get_batch_tensors(batch, device, True)
+                x, y, hall, zprime, log_density = get_batch_tensors(batch, device)
                 loss = _compute_lattice_loss(
-                    args.model, model, x, y, hall, zprime, log_density,
-                    stats, args, polymorph_bank, batch, True, device,
+                    model, x, y, hall, zprime, log_density,
+                    stats, args, polymorph_bank, batch, device,
                 )
                 val_losses.append(float(loss.item()))
         val_loss = float(np.mean(val_losses)) if val_losses else float("inf")

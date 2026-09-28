@@ -15,3 +15,4 @@ datasets/test.db
 # Editors / OS
 .vscode/
 .DS_Store
+*.swp

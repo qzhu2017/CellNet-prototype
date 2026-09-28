@@ -4,7 +4,6 @@ import numpy as np
 import torch
 
 from cellnet.data import DatasetStats
-from cellnet.metrics import given_hz_lattice_flow_loss
 from cellnet.polymorph import SellingPolymorphBank
 from cellnet.splits import split_by_smiles_group
 
@@ -103,50 +102,3 @@ def test_polymorph_bank_missing_key_uses_fallback():
     assert ld.shape == (1, 1)
     assert torch.allclose(lat[0, 0], fallback_lat[0])
     assert torch.allclose(ld[0, 0], fallback_ld[0])
-
-
-def test_lattice_flow_polymorph_loss_min_over_k():
-    stats_mean = torch.zeros(6)
-    stats_std = torch.ones(6)
-    lam_mean = torch.zeros(3)
-    lam_std = torch.ones(3)
-    lam_r_mean = torch.zeros(3)
-    lam_r_std = torch.ones(3)
-    outputs = {
-        "velocity": torch.zeros(1, 12),
-        "velocity_target": torch.zeros(1, 12),
-        "lattice_flow": torch.zeros(1, 12),
-        "log_density": torch.tensor([0.0]),
-    }
-    target_lattice = torch.tensor([[0.5] * 12])
-    target_ld = torch.tensor([1.0])
-    poly_lattice = torch.stack([target_lattice, torch.ones(1, 12) * 4.0], dim=1)
-    poly_ld = torch.tensor([[1.0, 5.0]])
-
-    loss_match, _ = given_hz_lattice_flow_loss(
-        outputs,
-        target_lattice,
-        target_ld,
-        stats_mean,
-        stats_std,
-        lam_mean,
-        lam_std,
-        lam_r_mean,
-        lam_r_std,
-        polymorph_lattice=poly_lattice,
-        polymorph_log_density=poly_ld,
-    )
-    loss_nomatch, _ = given_hz_lattice_flow_loss(
-        outputs,
-        target_lattice,
-        target_ld,
-        stats_mean,
-        stats_std,
-        lam_mean,
-        lam_std,
-        lam_r_mean,
-        lam_r_std,
-        polymorph_lattice=torch.ones(1, 1, 12) * 4.0,
-        polymorph_log_density=torch.tensor([[5.0]]),
-    )
-    assert loss_match.item() < loss_nomatch.item()

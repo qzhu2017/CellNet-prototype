@@ -89,131 +89,6 @@ def _weighted_sample_mean(values: torch.Tensor, weights: torch.Tensor | None) ->
     return (values * weights).sum() / weights.sum().clamp(min=1e-12)
 
 
-def given_hz_lattice_flow_loss(
-    outputs: dict[str, torch.Tensor],
-    target_lattice: torch.Tensor,
-    target_log_density: torch.Tensor,
-    selling_mean: torch.Tensor,
-    selling_std: torch.Tensor,
-    log_lambda_mean: torch.Tensor,
-    log_lambda_std: torch.Tensor,
-    log_lambda_recip_mean: torch.Tensor,
-    log_lambda_recip_std: torch.Tensor,
-    selling_dim: int = 6,
-    log_lambda_dim: int = 3,
-    w_flow: float = 1.0,
-    w_s: float = 1.0,
-    w_lambda: float = 1.0,
-    w_lambda_recip: float = 1.0,
-    w_density: float = 0.25,
-    lambda_loss_mode: str = "phys_log",
-    w_lambda_relative: float = 0.0,
-    w_lambda_product: float = 0.0,
-    polymorph_lattice: torch.Tensor | None = None,
-    polymorph_log_density: torch.Tensor | None = None,
-    sample_weight: torch.Tensor | None = None,
-    target_shape_bin: torch.Tensor | None = None,
-    w_shape_bin: float = 0.0,
-    target_axis_permutation_mask: torch.Tensor | None = None,
-    w_axis_permutation: float = 0.0,
-) -> tuple[torch.Tensor, dict[str, float]]:
-    """Flow-matching on [Selling, log λ, log λ*] + density regression."""
-    from cellnet.sequential import selling_norm_to_phys_torch, selling_relative_mse
-
-    flow_per_sample = (outputs["velocity"] - outputs["velocity_target"]).pow(2).mean(dim=-1)
-    flow_loss = _weighted_sample_mean(flow_per_sample, sample_weight)
-    pred = outputs["lattice_flow"]
-    s_end = selling_dim
-    l_end = s_end + log_lambda_dim
-
-    pred_s = pred[:, :s_end]
-    pred_lam = pred[:, s_end:l_end]
-    pred_lam_r = pred[:, l_end:]
-
-    if polymorph_lattice is not None and polymorph_lattice.ndim == 3:
-        ref_s = polymorph_lattice[:, :, :s_end]
-        ref_lam = polymorph_lattice[:, :, s_end:l_end]
-        ref_lam_r = polymorph_lattice[:, :, l_end:]
-        pred_s_phys = selling_norm_to_phys_torch(pred_s, selling_mean, selling_std)
-        ref_s_phys = selling_norm_to_phys_torch(ref_s, selling_mean, selling_std)
-        eps = torch.tensor(1e-8, device=pred.device)
-        scale = torch.maximum(torch.maximum(pred_s_phys.unsqueeze(1).abs(), ref_s_phys.abs()), eps)
-        s_per_k = ((pred_s_phys.unsqueeze(1) - ref_s_phys) / scale).pow(2).mean(dim=-1)
-        s_loss = s_per_k.min(dim=1).values.mean()
-        lam_loss = _lattice_lambda_endpoint_loss(
-            pred_lam, ref_lam, log_lambda_mean, log_lambda_std,
-            mode=lambda_loss_mode, relative_weight=w_lambda_relative,
-        ).min(dim=1).values.mean()
-        lam_r_loss = _lattice_lambda_endpoint_loss(
-            pred_lam_r, ref_lam_r, log_lambda_recip_mean, log_lambda_recip_std,
-            mode=lambda_loss_mode, relative_weight=w_lambda_relative,
-        ).min(dim=1).values.mean()
-        if polymorph_log_density is not None:
-            density_loss = (outputs["log_density"].unsqueeze(1) - polymorph_log_density).pow(2).min(dim=1).values.mean()
-        else:
-            density_loss = F.mse_loss(outputs["log_density"], target_log_density)
-    else:
-        ref_s = target_lattice[:, :s_end]
-        ref_lam = target_lattice[:, s_end:l_end]
-        ref_lam_r = target_lattice[:, l_end:]
-        pred_s_phys = selling_norm_to_phys_torch(pred_s, selling_mean, selling_std)
-        ref_s_phys = selling_norm_to_phys_torch(ref_s, selling_mean, selling_std)
-        s_loss = selling_relative_mse(pred_s_phys, ref_s_phys)
-        lam_loss = _lattice_lambda_endpoint_loss(
-            pred_lam, ref_lam, log_lambda_mean, log_lambda_std,
-            mode=lambda_loss_mode, relative_weight=w_lambda_relative,
-        )
-        lam_r_loss = _lattice_lambda_endpoint_loss(
-            pred_lam_r, ref_lam_r, log_lambda_recip_mean, log_lambda_recip_std,
-            mode=lambda_loss_mode, relative_weight=w_lambda_relative,
-        )
-        density_loss = F.mse_loss(outputs["log_density"], target_log_density)
-
-    lambda_product_loss = torch.tensor(0.0, device=pred.device)
-    if w_lambda_product > 0.0:
-        lambda_product_loss = _lattice_lambda_product_loss(
-            pred_lam, ref_lam, log_lambda_mean, log_lambda_std,
-        )
-    shape_bin_loss = torch.tensor(0.0, device=pred.device)
-    if (
-        w_shape_bin > 0.0
-        and target_shape_bin is not None
-        and "shape_logits" in outputs
-    ):
-        shape_bin_loss = F.cross_entropy(outputs["shape_logits"], target_shape_bin.long())
-    axis_permutation_loss = _axis_permutation_class_loss(
-        outputs,
-        target_axis_permutation_mask,
-        w_axis_permutation,
-    )
-
-    total = (
-        w_flow * flow_loss
-        + w_s * s_loss
-        + w_lambda * lam_loss
-        + w_lambda_recip * lam_r_loss
-        + w_density * density_loss
-        + w_lambda_product * lambda_product_loss
-        + w_shape_bin * shape_bin_loss
-        + w_axis_permutation * axis_permutation_loss
-    )
-    metrics = {
-        "total": total.item(),
-        "flow": float(flow_loss.item()),
-        "s_loss": float(s_loss.item()),
-        "lambda": float(lam_loss.item()),
-        "lambda_recip": float(lam_r_loss.item()),
-        "density": float(density_loss.item()),
-    }
-    if w_lambda_product > 0.0:
-        metrics["lambda_product"] = float(lambda_product_loss.item())
-    if w_shape_bin > 0.0 and "shape_logits" in outputs:
-        metrics["shape_bin"] = float(shape_bin_loss.item())
-    if w_axis_permutation > 0.0 and "axis_permutation_logits" in outputs:
-        metrics["axis_permutation"] = float(axis_permutation_loss.item())
-    return total, metrics
-
-
 def _axis_permutation_class_loss(
     outputs: dict[str, torch.Tensor],
     target_mask: torch.Tensor | None,
@@ -269,7 +144,7 @@ def given_hz_conditional_lattice_flow_loss(
     target_axis_permutation_mask: torch.Tensor | None = None,
     w_axis_permutation: float = 0.0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """Selling flow + conditional λ flow; endpoint losses match joint lattice-flow model."""
+    """Selling flow + conditional λ flow velocity losses, plus endpoint losses on S, λ, λ* and ρ."""
     from cellnet.sequential import selling_norm_to_phys_torch, selling_relative_mse
 
     w_flow_l = w_flow if w_flow_lambda is None else w_flow_lambda

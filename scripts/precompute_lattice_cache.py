@@ -10,6 +10,7 @@ import os
 import sys
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 from tqdm import tqdm
