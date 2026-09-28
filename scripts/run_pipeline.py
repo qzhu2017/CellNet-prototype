@@ -276,7 +276,18 @@ def main() -> None:
         default=str(ROOT / "datasets/spade-csp/spade_test.csv"),
         help="Primary SPaDe CSV after test.db (train CSV searched if missing)",
     )
-    parser.add_argument("--csd-code", type=str, default="DATSIC")
+    parser.add_argument(
+        "--csd-code",
+        type=str,
+        default=None,
+        help="CSD code looked up in --db, test.db or the SPaDe tables (else give --smiles --hall --zprime)",
+    )
+    parser.add_argument(
+        "--tag",
+        type=str,
+        default=None,
+        help="Name of the output subfolder (default: the CSD code, else 'custom')",
+    )
     parser.add_argument("--smiles", type=str, default=None)
     parser.add_argument("--hall", type=int, default=None)
     parser.add_argument("--zprime", type=float, default=None)
@@ -530,7 +541,7 @@ def main() -> None:
     true_cellpar = None
     match_ref = args.match_ref and not args.no_match_ref
     if args.csd_code:
-        tag = args.csd_code
+        tag = args.tag or args.csd_code
         smiles, hall, zprime, true_cellpar, resolved_db, from_test_db = _resolve_crystal_metadata(
             args.csd_code,
             csv_path=args.csv,
@@ -543,14 +554,14 @@ def main() -> None:
             db_path = resolved_db
         if from_test_db and not args.no_match_ref and not args.match_ref:
             match_ref = True
-            print("  Auto-enabled reference matching (structure from datasets/test.db)")
+            print("  Auto-enabled reference matching (structure from test.db)")
     else:
         if not args.smiles or args.hall is None or args.zprime is None:
             parser.error("Provide --csd-code or (--smiles --hall --zprime)")
         smiles = args.smiles
         hall = args.hall
         zprime = args.zprime
-        tag = "custom"
+        tag = args.tag or "custom"
 
     out_dir = Path(args.output_dir) / tag
     out_dir.mkdir(parents=True, exist_ok=True)

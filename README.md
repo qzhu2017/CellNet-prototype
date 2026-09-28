@@ -72,11 +72,12 @@ Propose cells for a molecule (steps 1–3; minutes on a workstation):
 ```bash
 python scripts/run_pipeline.py \
   --smiles "CC(=O)Oc1ccccc1C(=O)O" --hall 81 --zprime 1 \
-  --k 96 --skip-conf-qrs --output-dir outputs/aspirin
+  --k 96 --skip-conf-qrs --tag aspirin
 ```
 
 The flow draws (`*_flow_k96.npz`), the lattice-QRS cells (`*_lattice_qrs.csv`) and the
-deduplicated cells (`*_unique_cells.csv`) are written under `outputs/aspirin/`.
+deduplicated cells (`*_unique_cells.csv`) are written under `outputs/pipeline/aspirin/`
+(`--output-dir` changes the parent folder).
 
 Run the packing search as well, with the paper's cell budget and search settings:
 
@@ -85,7 +86,7 @@ python scripts/run_pipeline.py \
   --smiles "CC(=O)Oc1ccccc1C(=O)O" --hall 81 --zprime 1 --sage 2.0 \
   --k 96 --conf-selection multichannel --max-conf-runs 72 --cell-blind \
   --conf-qrs-origin-only --conf-npop 96 --no-conf-check-stable \
-  --relax-lattice --conf-nproc 48
+  --relax-lattice --conf-nproc 48 --tag aspirin
 ```
 
 Relaxed structures and their force-field energies are written to each cell's `conf_qrs_*` folder.
