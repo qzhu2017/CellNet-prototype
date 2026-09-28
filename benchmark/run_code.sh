@@ -3,6 +3,7 @@
 #
 #   bash benchmark/run_code.sh OBEQUJ                 # -> outputs/benchmark/OBEQUJ/
 #   OUTPUT_DIR=/path/to/out NPROC=32 bash benchmark/run_code.sh OBEQUJ
+#   MAX_CONF_RUNS=64 bash benchmark/run_code.sh OBEQUJ   # fewer cells (paper: 72)
 #
 # Protocol: K=96 flow draws (seed 42); lattice QRS with 12 Sobol stages x 1024 points;
 # 72 cells chosen by the cell-blind multichannel selection (lambda consistency 6,
@@ -22,6 +23,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT}/outputs/benchmark}"
 NPROC="${NPROC:-48}"
 CKPT="${CKPT:-${ROOT}/checkpoints/cellnet_flow/best.pt}"
+MAX_CONF_RUNS="${MAX_CONF_RUNS:-72}"
 
 mkdir -p "${OUTPUT_DIR}/${CODE}"
 cd "$ROOT"
@@ -41,7 +43,7 @@ python scripts/run_pipeline.py \
   --conf-ngen 20 \
   --conf-npop 96 \
   --conf-nproc "$NPROC" \
-  --max-conf-runs 72 \
+  --max-conf-runs "$MAX_CONF_RUNS" \
   --conf-selection multichannel \
   --conf-channel-lambda 6 \
   --conf-channel-qrs-loss 6 \
