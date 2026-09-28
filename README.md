@@ -133,6 +133,12 @@ but not identical model. `checkpoints/cellnet_flow_v9/best.pt` stores the full a
 python -m pytest tests/ -q
 ```
 
+## License
+
+The code and the trained model are released under the [MIT License](LICENSE). The training
+tables derive from SPaDe-CSP and the CSD; see [`datasets/README.md`](datasets/README.md) for
+their provenance.
+
 ## Acknowledgments
 
 Supported by the NSF (DMR-2410178); computing resources from ACCESS (TG-MAT230046).
