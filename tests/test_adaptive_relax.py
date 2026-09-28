@@ -20,7 +20,7 @@ def test_empty_sweep_is_not_a_hit():
 
 
 def test_all_zero_success_rates_is_not_a_hit():
-    """The v9 outright-failure signature: every cell finished, none matched."""
+    """The fallback trigger: every cell finished, none matched."""
     assert conf_sweep_had_hit([_record(0.0) for _ in range(72)]) is False
 
 

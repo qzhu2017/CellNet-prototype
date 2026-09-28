@@ -75,12 +75,6 @@ def constrain_log_lambda_batch(
     return out, clipped
 
 
-def _gram_matrix(cellpar: np.ndarray) -> np.ndarray:
-    """Gram matrix G = M Mᵀ for direct lattice rows M."""
-    m = direct_matrix_from_cellpar(cellpar)
-    return metric_tensor(m)
-
-
 def _enumerate_candidates(
     gram: np.ndarray,
     search_radius: int,
@@ -272,17 +266,6 @@ def log_reciprocal_successive_minima(cellpar: np.ndarray, search_radius: int | N
     return np.log(np.clip(lambdas, 1e-12, None))
 
 
-def successive_minima_ratios(cellpar: np.ndarray, search_radius: int | None = None) -> np.ndarray:
-    """Scale-free shape invariants (λ₂/λ₁, λ₃/λ₁, λ₃/λ₂)."""
-    lambdas = successive_minima(cellpar, search_radius=search_radius)
-    return np.array(
-        [lambdas[1] / lambdas[0], lambdas[2] / lambdas[0], lambdas[2] / lambdas[1]],
-        dtype=np.float64,
-    )
-
-
-SELLING_DIM = 6
-SELLING_PAIR_LABELS = ("12", "13", "14", "23", "24", "34")
 
 
 def gram_from_selling(selling: np.ndarray) -> np.ndarray:

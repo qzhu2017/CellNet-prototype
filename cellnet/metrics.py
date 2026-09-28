@@ -6,8 +6,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from cellnet.symmetry import align_cellpar_to_reference
-
 
 def _lattice_lambda_endpoint_loss(
     pred_norm: torch.Tensor,
@@ -264,40 +262,3 @@ def evaluate_lattice_flow_k_samples(
         f"{component}_mse_norm_mean": float(np.mean(per_k)),
         f"{component}_mse_norm_best": float(np.mean(best)),
     }
-
-
-def cellpar_errors(
-    pred_cellpar: np.ndarray,
-    true_cellpar: np.ndarray,
-    hall_numbers: np.ndarray | list[int] | None = None,
-    align_axes: bool = False,
-) -> dict[str, float]:
-    """Compute per-parameter and volume errors."""
-    pred = np.asarray(pred_cellpar, dtype=np.float64)
-    true = np.asarray(true_cellpar, dtype=np.float64)
-    if align_axes:
-        if hall_numbers is None:
-            raise ValueError("hall_numbers required when align_axes=True")
-        pred = np.stack([
-            align_cellpar_to_reference(p, t, int(h))
-            for p, t, h in zip(pred, true, hall_numbers)
-        ])
-
-    names = ["a", "b", "c", "alpha", "beta", "gamma"]
-    errors = {}
-    for i, name in enumerate(names):
-        errors[f"mae_{name}"] = float(np.mean(np.abs(pred[:, i] - true[:, i])))
-        if name in ("a", "b", "c"):
-            rel = np.abs(pred[:, i] - true[:, i]) / np.clip(true[:, i], 1e-6, None)
-            errors[f"mape_{name}"] = float(np.mean(rel) * 100)
-
-    def volume(cp):
-        a, b, c, al, be, ga = cp.T
-        cos_a, cos_b, cos_g = np.cos(np.radians([al, be, ga]))
-        term = 1 - cos_a**2 - cos_b**2 - cos_g**2 + 2 * cos_a * cos_b * cos_g
-        return a * b * c * np.sqrt(np.clip(term, 0, None))
-
-    v_pred = volume(pred)
-    v_true = volume(true)
-    errors["mape_volume"] = float(np.mean(np.abs(v_pred - v_true) / np.clip(v_true, 1e-6, None)) * 100)
-    return errors

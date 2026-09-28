@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections import OrderedDict
 from concurrent.futures import ProcessPoolExecutor
 
-import numpy as np
 import torch
 from rdkit import Chem
 from torch_geometric.data import Data

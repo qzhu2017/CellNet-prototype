@@ -52,8 +52,6 @@ from cellnet.lattice_conf_pipeline import (
     reference_match_score,
     run_conf_qrs_one,
     lattice_records_from_selling,
-    qrs_origin_unique_cells,
-    append_disagreeing_selling_cells,
     unique_cell_is_qrs_origin,
     unique_cell_is_sell_only,
     posterior_effective_mode_count,
@@ -65,7 +63,6 @@ from cellnet.lattice_conf_pipeline import (
     save_flow_batch,
     save_pipeline_artifacts,
     summarize_adaptive_sweeps,
-    select_diverse_unique_cells,
     lattice_records_from_unique_axis_alternates,
     select_multichannel_unique_cells,
     unique_cell_is_axis_alternate,
@@ -361,7 +358,7 @@ def main() -> None:
         help=(
             "Multichannel quota for monoclinic unique-axis alternates: the most "
             "λ-consistent QRS cells relabeled so b sits on each other edge "
-            "(default: 12, v11 protocol; 0 restores the v9/v10 behaviour of b on λ₁ only)"
+            "(default: 12, as in the paper; 0 keeps b on λ₁ only)"
         ),
     )
     parser.add_argument(
@@ -391,7 +388,7 @@ def main() -> None:
         help=(
             "Symmetric predicted-density gate for Selling cells; 1.25 accepts "
             "cell density/predicted density and cell volume/target volume in [0.8, 1.25]. "
-            "Unset preserves the v6 gate"
+            "Unset keeps the Minkowski volume window [V, (6/π)V] used to clip λ"
         ),
     )
     parser.add_argument(
@@ -469,7 +466,7 @@ def main() -> None:
         action="store_true",
         help=(
             "End a conf-QRS sweep as soon as one cell matches the reference "
-            "(coverage benchmarks only; needs reference matching). In the v9 suite "
+            "(coverage benchmarks only; needs reference matching). In the benchmark suite "
             "the median first hit was the 2nd of 72 cells and 87%% of conf-QRS time "
             "was spent after the first hit."
         ),
@@ -482,7 +479,7 @@ def main() -> None:
             "If the entire conformational-QRS sweep finds no match, repeat it "
             "once with the opposite --relax-lattice setting. The second sweep "
             "costs nothing on structures that already succeed "
-            "(default: disabled, v9 behaviour)"
+            "(default: disabled)"
         ),
     )
     parser.add_argument(

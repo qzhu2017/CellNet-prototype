@@ -1,4 +1,4 @@
-"""Monoclinic unique-axis alternates (MERRAF failure, v10 analysis 2026-09-12).
+"""Monoclinic unique-axis alternates (the MERRAF failure case).
 
 The lattice-QRS seed puts the monoclinic unique axis b on λ₁ and the (λ, λ*, ρ)
 objective cannot distinguish which edge carries the 2₁ axis, so cells with b on
@@ -28,7 +28,7 @@ HALL_P21 = 6  # MERRAF is run as P2₁ (unique axis b), Z′ = 1
 HALL_PBCA = 290
 HALL_P1BAR = 2
 
-# Lattice-QRS cell for MERRAF flow draw 42 (v10 full suite) and the true cell
+# Lattice-QRS cell for MERRAF flow draw 42 of the benchmark run and the true cell
 # in the P2₁ setting; only the unique-axis assignment differs.
 QRS_CELL_42 = np.array([20.996, 3.868, 7.494, 90.0, 89.65, 90.0])
 TRUE_MERRAF = np.array([4.032, 21.157, 7.312, 90.0, 84.2, 90.0])

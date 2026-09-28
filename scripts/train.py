@@ -19,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import random_split
 from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT))
 from cellnet.data import (
     CrystalGraphDataset,
     attach_lattice_invariants,
-    attach_sequential_targets,
+    attach_log_density,
     attach_selling_targets,
     compute_stats,
     graphify_samples,
@@ -423,12 +423,12 @@ def main():
 
     if not samples_precomputed:
         attach_selling_targets(samples)
-        attach_sequential_targets(samples)
+        attach_log_density(samples)
         attach_lattice_invariants(samples)
         print("Attached Delaunay Selling + log-density + log(λ) + log(λ*) targets")
         if test_list and not test_precomputed:
             attach_selling_targets(test_list)
-            attach_sequential_targets(test_list)
+            attach_log_density(test_list)
             attach_lattice_invariants(test_list)
     else:
         print("Using precomputed Selling + log-density + log(λ) + log(λ*) targets")
@@ -492,13 +492,7 @@ def main():
     idx_to_hall = {i: h for h, i in hall_to_idx.items()}
     zprime_to_idx = {z: i for i, z in enumerate(all_zprimes)}
 
-    stats = compute_stats(
-        train_list,
-        use_graph=True,
-        use_selling=True,
-        use_log_lambda=True,
-        use_log_density=True,
-    )
+    stats = compute_stats(train_list)
     stats.hall_to_idx = hall_to_idx
     stats.idx_to_hall = idx_to_hall
     stats.zprime_to_idx = zprime_to_idx

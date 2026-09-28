@@ -8,57 +8,10 @@ import numpy as np
 import torch
 
 from cellnet.packing import molecular_weight, packing_density
-from cellnet.symmetry import (
-    apply_cellpar_constraints,
-    cellpar_to_free,
-    crystal_system_from_hall,
-    free_to_cellpar,
-)
 
 FREE_PARAM_DIM = 6
 LOG_LAMBDA_DIM = 3
 LOG_LAMBDA_RECIP_DIM = 3
-LATTICE_LAMBDA_DIM = LOG_LAMBDA_DIM + LOG_LAMBDA_RECIP_DIM
-
-
-def free_param_mask(hall_number: int) -> np.ndarray:
-    """
-    Boolean mask over padded free-parameter slots.
-
-    Layout: [log(a), log(b), log(c), alpha, beta, gamma].
-    Tetragonal / trigonal / hexagonal use slots 0 (log a) and 1 (log c).
-    """
-    system = crystal_system_from_hall(hall_number)
-    mask = np.zeros(FREE_PARAM_DIM, dtype=bool)
-    if system == "triclinic":
-        mask[:] = True
-    elif system == "monoclinic":
-        mask[[0, 1, 2, 4]] = True
-    elif system == "orthorhombic":
-        mask[[0, 1, 2]] = True
-    elif system in ("tetragonal", "trigonal", "hexagonal"):
-        mask[[0, 1]] = True
-    elif system == "cubic":
-        mask[0] = True
-    else:
-        raise ValueError(f"Unknown crystal system for hall {hall_number}: {system}")
-    return mask
-
-
-def cellpar_to_padded_free(cellpar: np.ndarray, hall_number: int) -> tuple[np.ndarray, np.ndarray]:
-    """Encode symmetry-reduced parameters into a fixed 6-slot vector + mask."""
-    mask = free_param_mask(hall_number)
-    free = cellpar_to_free(cellpar, hall_number)
-    padded = np.zeros(FREE_PARAM_DIM, dtype=np.float64)
-    padded[mask] = free
-    return padded, mask
-
-
-def padded_free_to_cellpar(padded: np.ndarray, hall_number: int) -> np.ndarray:
-    """Decode padded free parameters to direct cell parameters."""
-    mask = free_param_mask(hall_number)
-    free = np.asarray(padded, dtype=np.float64)[mask]
-    return free_to_cellpar(free, hall_number)
 
 
 def compute_density(
@@ -143,15 +96,6 @@ def denorm_selling_log1p(selling_norm: np.ndarray, stats) -> np.ndarray:
     return inv_signed_log1p(log_s)
 
 
-def norm_selling_log1p(selling: np.ndarray, stats) -> np.ndarray:
-    """Normalize physical Selling (Å²) to signed-log z-score space."""
-    from cellnet.lattice_invariants import sort_selling_parameters
-
-    s = sort_selling_parameters(np.asarray(selling, dtype=np.float64))
-    log_s = signed_log1p(s)
-    return ((log_s - stats.selling_mean) / stats.selling_std).astype(np.float64)
-
-
 def selling_norm_to_phys_torch(
     selling_norm: torch.Tensor,
     mean: torch.Tensor,
@@ -226,17 +170,6 @@ def delaunay_standardize_cellpar(cellpar: np.ndarray, hall_number: int) -> np.nd
     from cellnet.lattice_invariants import delaunay_standardize_cellpar as _std
 
     return _std(cellpar, hall_number)
-
-
-def decode_free_prediction(
-    pred_norm: np.ndarray,
-    stats,
-    hall_number: int,
-) -> np.ndarray:
-    """Denormalize padded free prediction and decode to constrained cell parameters."""
-    padded = pred_norm * stats.free_std + stats.free_mean
-    cellpar = padded_free_to_cellpar(padded, hall_number)
-    return apply_cellpar_constraints(cellpar, hall_number)
 
 
 @torch.no_grad()

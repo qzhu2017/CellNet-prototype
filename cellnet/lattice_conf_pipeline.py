@@ -17,7 +17,6 @@ import csv
 import json
 import multiprocessing as mp
 import random
-import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -37,7 +36,6 @@ from cellnet.inference import (
     denorm_log_density,
     load_flow_qrs_model,
 )
-from cellnet.models import GivenHZConditionalLatticeFlowGNN
 from cellnet.qrs import QRSConfig, _config_to_dict, qrs_search_cellpar
 from cellnet.sequential import (
     compute_log_reciprocal_successive_minima,
@@ -446,11 +444,6 @@ def init_cellpar_candidates_from_log_lambda(
         return _dedupe_cellpar_candidates(candidates)
     candidates.append(np.array([lam[0], lam[1], lam[2], 90.0, 90.0, 90.0], dtype=np.float64))
     return _dedupe_cellpar_candidates(candidates)
-
-
-def init_cellpar_from_log_lambda(log_lambda: np.ndarray, hall_number: int) -> np.ndarray:
-    """Return the first (primary) λ → cellpar initialization candidate."""
-    return init_cellpar_candidates_from_log_lambda(log_lambda, hall_number)[0]
 
 
 def _finalize_lattice_qrs_cellpar(
@@ -1067,8 +1060,8 @@ def lattice_records_from_selling(
 AXIS_ALTERNATE_SOURCE = "qrs_axis_alt"
 
 # Which of the three cell edges carries the monoclinic unique axis b in the
-# SPADE training split (73,852 monoclinic cells, unique axis b, measured
-# 2026-09-12): shortest 45.6 %, middle 24.2 %, longest 30.2 %. The lattice-QRS
+# SPaDe-CSP training split (73,852 monoclinic cells, unique axis b):
+# shortest 45.6 %, middle 24.2 %, longest 30.2 %. The lattice-QRS
 # seed puts b on λ₁ and the (λ, λ*, ρ) objective is invariant to the choice, so
 # without alternates the sweep tries the b = λ₃ setting in only ~1 % of cells.
 MONOCLINIC_UNIQUE_AXIS_RANK_PRIOR: tuple[float, float, float] = (0.456, 0.242, 0.302)
@@ -1911,7 +1904,7 @@ def select_multichannel_unique_cells(
 
 
 def _scaled_selling_channel_quotas(quota: int) -> tuple[int, int, int, int]:
-    """Scale the v7 8/8/4/4 allocation with deterministic largest remainders."""
+    """Scale the 8/8/4/4 channel allocation with deterministic largest remainders."""
     quota = max(int(quota), 0)
     weights = np.asarray([8, 8, 4, 4], dtype=np.float64) / 24.0
     raw = weights * quota
@@ -2731,9 +2724,9 @@ def conf_sweep_had_hit(records: list[ConfQRSRecord]) -> bool:
     """
     True when any conformational-QRS record in a sweep matched the reference.
 
-    A sweep that finishes every selected cell with no match at all is the v9
-    outright-failure signature: QAXMEH53, XAFPAY, XULDUD01 and OBEQUJ each
-    completed all 72 cells with zero hits. ``success_rate is None`` marks a run
+    A sweep that finishes every selected cell with no match at all triggers the
+    frozen-lattice fallback: in the benchmark, QAXMEH53, XAFPAY, XULDUD01 and
+    OBEQUJ each completed all 72 lattice-free cells with zero hits. ``success_rate is None`` marks a run
     that raised, and counts as no hit.
     """
     return any(
@@ -2767,8 +2760,8 @@ def summarize_adaptive_sweeps(
     Machine-readable account of an adaptive-relax run for the pipeline summary.
 
     ``conf_qrs`` in the summary JSON holds both passes back to back, so a
-    consumer that counts any positive success rate (the v8/v9 suite
-    summarizers) would silently credit fallback hits as v9-protocol coverage.
+    consumer that counts any positive success rate would silently credit
+    fallback hits as lattice-free coverage.
     This block keeps the two passes countable on their own.
     """
 
@@ -2805,7 +2798,7 @@ def conf_restart_seed(
     restart: int,
     seed_stride: int = 100_000,
 ) -> int:
-    """Return a deterministic one-based restart seed; restart 1 is v5-compatible."""
+    """Return a deterministic one-based restart seed (restart 1 uses base_seed + dedup_idx)."""
     if restart < 1:
         raise ValueError("restart must be >= 1")
     if seed_stride < 1:
@@ -2819,7 +2812,7 @@ def conf_restart_workdir(
     restart: int,
     n_restarts: int,
 ) -> Path:
-    """Return collision-free restart paths while preserving the v5 single path."""
+    """Return collision-free restart paths; a single restart uses conf_qrs_<idx>."""
     if restart < 1 or n_restarts < 1 or restart > n_restarts:
         raise ValueError("restart must be in [1, n_restarts]")
     root = Path(out_dir)

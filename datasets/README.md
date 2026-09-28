@@ -50,7 +50,7 @@ python scripts/precompute_lattice_cache.py --input datasets/spade-csp/spade_test
 python scripts/shard_graph_sidecar.py --input datasets/spade-csp/spade_train_precomputed_graphs.pt --shard-size 10000
 ```
 
-Each run writes `*_precomputed.csv` (normalized Selling, log λ, log λ\*, log density and
-symmetry-reduced free parameters) and a graph sidecar `*_precomputed_graphs.pt` (about
+Each run writes `*_precomputed.csv` (signed-log Selling scalars, log λ, log λ\* and log
+density) and a graph sidecar `*_precomputed_graphs.pt` (about
 800 MB for the training split). `--resume` continues an interrupted run; `--max-samples N`
 runs on a subset. Training detects shards through `*_graphs_shards.json`.

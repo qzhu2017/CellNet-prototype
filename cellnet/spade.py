@@ -12,8 +12,7 @@ import numpy as np
 import spglib
 
 from cellnet.data import CrystalSample
-from cellnet.reciprocal import cellpar_to_reciprocal_metric
-from cellnet.symmetry import apply_cellpar_constraints, crystal_system_from_hall, crystal_system_from_spg
+from cellnet.symmetry import apply_cellpar_constraints, crystal_system_from_hall
 
 SPADE_EXPORT_COLUMNS = [
     "refcode",
@@ -418,66 +417,6 @@ def split_crystal_info_csv(
     return n_train, n_test
 
 
-def _row_to_export(row: dict) -> dict | None:
-    smiles = str(row.get("SMILES", "")).strip()
-    if not smiles:
-        return None
-    sg_number = int(float(row["sg_number"]))
-    sg_symbol = str(row.get("sg_symbol", "")).strip()
-    hall = hall_number_from_sg_symbol(sg_number, sg_symbol)
-    if hall is None:
-        return None
-    hall_number, _hall_csd, _full = hall
-    return {
-        "refcode": str(row.get("refcode", "")).strip(),
-        "sg_symbol": sg_symbol,
-        "sg_number": sg_number,
-        "hall_number": hall_number,
-        "smiles": smiles,
-        "zprime": float(row["Z-prime"]),
-        "a": float(row["a"]),
-        "b": float(row["b"]),
-        "c": float(row["c"]),
-        "alpha": float(row["alpha"]),
-        "beta": float(row["beta"]),
-        "gamma": float(row["gamma"]),
-        "density": float(row["density"]),
-    }
-
-
-def extract_spade_csv(input_path: str | Path, output_path: str | Path) -> ExtractStats:
-    """Extract normalized columns from a SPaDe train/test CSV."""
-    input_path = Path(input_path)
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    n_written = 0
-    skipped_unmapped_hall = 0
-    skipped_missing_smiles = 0
-    with input_path.open(newline="") as fin, output_path.open("w", newline="") as fout:
-        reader = csv.DictReader(fin)
-        writer = csv.DictWriter(fout, fieldnames=SPADE_EXPORT_COLUMNS)
-        writer.writeheader()
-        for row in reader:
-            if not str(row.get("SMILES", "")).strip():
-                skipped_missing_smiles += 1
-                continue
-            sg_number = int(float(row["sg_number"]))
-            sg_symbol = str(row.get("sg_symbol", "")).strip()
-            if hall_number_from_sg_symbol(sg_number, sg_symbol) is None:
-                skipped_unmapped_hall += 1
-                continue
-            out = _row_to_export(row)
-            assert out is not None
-            writer.writerow(out)
-            n_written += 1
-    return ExtractStats(
-        written=n_written,
-        skipped_unmapped_hall=skipped_unmapped_hall,
-        skipped_missing_smiles=skipped_missing_smiles,
-    )
-
-
 def load_spade_csv(
     csv_path: str | Path,
     max_samples: int | None = None,
@@ -506,7 +445,6 @@ def load_spade_csv(
             )
             sg_number = int(row["sg_number"])
             hall_number = int(row.get("hall_number") or hall_number_from_spg(sg_number))
-            rec_metric = cellpar_to_reciprocal_metric(cellpar)
 
             samples.append(
                 CrystalSample(
@@ -519,7 +457,6 @@ def load_spade_csv(
                     space_group=str(row.get("sg_symbol", "")),
                     l_type="",
                     cellpar=cellpar,
-                    reciprocal_metric=rec_metric,
                 )
             )
 
@@ -533,12 +470,5 @@ def load_structure_csv(
     max_samples: int | None = None,
     verbose: bool = True,
 ) -> list[CrystalSample]:
-    """Load HEM or extracted SPaDe CSV by header inspection."""
-    from cellnet.data import load_hem_csv
-
-    csv_path = Path(csv_path)
-    with csv_path.open(newline="") as handle:
-        header = handle.readline()
-    if "cell_parameters" in header:
-        return load_hem_csv(csv_path, max_samples=max_samples, verbose=verbose)
+    """Load an extracted SPaDe CSV (see scripts/build_dataset.py)."""
     return load_spade_csv(csv_path, max_samples=max_samples, verbose=verbose)

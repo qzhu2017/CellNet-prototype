@@ -6,7 +6,6 @@ import csv
 import json
 import random
 from collections import OrderedDict, defaultdict
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -15,28 +14,22 @@ import torch
 from cellnet.data import (
     CrystalSample,
     attach_lattice_invariants,
-    attach_sequential_targets,
+    attach_log_density,
     attach_selling_targets,
 )
 from cellnet.graph import smiles_to_graph
-from cellnet.reciprocal import cellpar_to_reciprocal_metric
-from cellnet.sequential import FREE_PARAM_DIM
 
 PRECOMPUTED_MARKER = "selling_log1p_0"
 
 SELLING_COLUMNS = [f"selling_log1p_{i}" for i in range(6)]
 LOG_LAMBDA_COLUMNS = [f"log_lambda_{i}" for i in range(3)]
 LOG_LAMBDA_RECIP_COLUMNS = [f"log_lambda_recip_{i}" for i in range(3)]
-FREE_COLUMNS = [f"free_{i}" for i in range(FREE_PARAM_DIM)]
-FREE_MASK_COLUMNS = [f"free_mask_{i}" for i in range(FREE_PARAM_DIM)]
 
 PRECOMPUTED_SCALAR_COLUMNS = (
     SELLING_COLUMNS
     + LOG_LAMBDA_COLUMNS
     + LOG_LAMBDA_RECIP_COLUMNS
     + ["log_density"]
-    + FREE_COLUMNS
-    + FREE_MASK_COLUMNS
 )
 
 PRECOMPUTED_BASE_COLUMNS = [
@@ -372,7 +365,6 @@ def _sample_from_row(row: dict, sample_id: int) -> CrystalSample:
         space_group=str(row.get("sg_symbol", "")),
         l_type="",
         cellpar=cellpar,
-        reciprocal_metric=cellpar_to_reciprocal_metric(cellpar),
     )
 
 
@@ -390,14 +382,6 @@ def _attach_targets_from_row(sample: CrystalSample, row: dict) -> None:
         dtype=np.float64,
     )
     sample.log_density = float(row["log_density"])
-    sample.free_padded = np.array(
-        [float(row[c]) for c in FREE_COLUMNS],
-        dtype=np.float64,
-    )
-    sample.free_mask = np.array(
-        [float(row[c]) for c in FREE_MASK_COLUMNS],
-        dtype=np.float64,
-    )
 
 
 def sample_to_precomputed_row(sample: CrystalSample) -> dict[str, str | float]:
@@ -405,8 +389,6 @@ def sample_to_precomputed_row(sample: CrystalSample) -> dict[str, str | float]:
         sample.selling_log1p is None
         or sample.log_successive_minima is None
         or sample.log_reciprocal_successive_minima is None
-        or sample.free_padded is None
-        or sample.free_mask is None
     ):
         raise ValueError(f"Sample {sample.csd_code} is missing precomputed targets")
 
@@ -432,10 +414,6 @@ def sample_to_precomputed_row(sample: CrystalSample) -> dict[str, str | float]:
         row[col] = float(sample.log_successive_minima[i])
     for i, col in enumerate(LOG_LAMBDA_RECIP_COLUMNS):
         row[col] = float(sample.log_reciprocal_successive_minima[i])
-    for i, col in enumerate(FREE_COLUMNS):
-        row[col] = float(sample.free_padded[i])
-    for i, col in enumerate(FREE_MASK_COLUMNS):
-        row[col] = float(sample.free_mask[i])
     return row
 
 
@@ -466,7 +444,7 @@ def precompute_sample(sample: CrystalSample) -> CrystalSample | None:
         return None
     sample.graph = graph
     attach_selling_targets([sample], verbose=False)
-    attach_sequential_targets([sample])
+    attach_log_density([sample])
     attach_lattice_invariants([sample], verbose=False)
     if (
         sample.selling_log1p is None

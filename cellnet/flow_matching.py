@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import math
 
-import numpy as np
 import torch
 import torch.nn as nn
 
-from cellnet.packing import cell_volume
-from cellnet.sequential import FREE_PARAM_DIM, decode_free_prediction
+from cellnet.sequential import FREE_PARAM_DIM
 
 
 class SinusoidalTimeEmbedding(nn.Module):
@@ -112,46 +110,3 @@ def integrate_flow(
     if mask is not None:
         x = x * mask
     return x
-
-
-def masked_velocity_mse(
-    pred: torch.Tensor,
-    target: torch.Tensor,
-    mask: torch.Tensor,
-) -> torch.Tensor:
-    diff = (pred - target) ** 2
-    n_active = mask.sum(dim=1).clamp(min=1.0)
-    return ((diff * mask).sum(dim=1) / n_active).mean()
-
-
-def relative_volume_error(pred_cellpar: np.ndarray, true_cellpar: np.ndarray) -> float:
-    v_pred = cell_volume(pred_cellpar)
-    v_true = cell_volume(true_cellpar)
-    return abs(v_pred - v_true) / max(v_true, 1e-6)
-
-
-def batch_volume_loss(
-    x1_hat_norm: torch.Tensor,
-    true_free_norm: torch.Tensor,
-    free_mask: torch.Tensor,
-    hall_indices: torch.Tensor,
-    idx_to_hall: dict[int, int],
-    stats,
-) -> torch.Tensor:
-    """
-    Relative volume error between one-step flow estimate and target.
-
-    Uses teacher Hall numbers for decoding during training.
-    """
-    losses = []
-    pred_np = x1_hat_norm.detach().cpu().numpy()
-    true_np = true_free_norm.detach().cpu().numpy()
-    halls = hall_indices.detach().cpu().numpy()
-    for p, t, h_idx in zip(pred_np, true_np, halls):
-        hall = idx_to_hall[int(h_idx)]
-        cp_pred = decode_free_prediction(p, stats, hall)
-        cp_true = decode_free_prediction(t, stats, hall)
-        losses.append(relative_volume_error(cp_pred, cp_true))
-    if not losses:
-        return torch.tensor(0.0, device=x1_hat_norm.device)
-    return torch.tensor(float(np.mean(losses)), device=x1_hat_norm.device)

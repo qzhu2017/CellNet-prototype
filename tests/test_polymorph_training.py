@@ -56,17 +56,19 @@ def test_polymorph_bank_batch():
     assert bank.n_groups == 1
 
     device = torch.device("cpu")
-    sell, ld, lam = bank.batch_tensors(
+    lat, ld = bank.batch_lattice_tensors(
         ["POLY", "UNIQ"],
         torch.tensor([0, 0]),
         torch.tensor([0, 0]),
         stats.idx_to_hall,
         stats.zprime_values,
         device,
+        fallback_lattice=torch.zeros(2, 12),
+        fallback_log_density=torch.zeros(2),
     )
-    assert sell.shape == (2, 2, 6)
+    # POLY has two packings; UNIQ has one and is padded to the batch maximum.
+    assert lat.shape == (2, 2, 12)
     assert ld.shape == (2, 2)
-    assert lam.shape == (2, 2, 3)
 
 
 def test_polymorph_bank_missing_key_uses_fallback():

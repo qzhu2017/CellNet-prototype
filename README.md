@@ -122,10 +122,12 @@ python scripts/precompute_lattice_cache.py --input datasets/spade-csp/spade_test
 python scripts/train_flow.py --precomputed --output-dir outputs/my_flow
 ```
 
-The shipped checkpoint (epoch 130 of a 400-epoch run with early stopping) was fine-tuned
+The shipped checkpoint is the lowest-validation-loss epoch (130) of a 400-epoch run, fine-tuned
 from an earlier flow trained on a smaller split, so training from scratch gives a comparable
-but not identical model. `checkpoints/cellnet_flow/best.pt` stores the full argument list
-(`torch.load(...)["args"]`). To rebuild the tables themselves from the SPaDe-CSP release, see
+but not identical model. `checkpoints/cellnet_flow/best.pt` stores the argument list it was
+trained with (`torch.load(...)["args"]`); entries such as `shape_bins` or
+`shape_retrieval_blend` belong to an experimental model that is not part of this release and
+were inactive for the shipped one. To rebuild the tables themselves from the SPaDe-CSP release, see
 [`datasets/README.md`](datasets/README.md).
 
 ## Tests

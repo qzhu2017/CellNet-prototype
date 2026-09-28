@@ -64,67 +64,6 @@ class SellingPolymorphBank:
                     lat_rows[j, sell.shape[0] : sell.shape[0] + lam.shape[0]] = lam
             self._packed[key] = (lat_rows, ld_rows)
 
-    def batch_tensors(
-        self,
-        smiles_list: list[str],
-        hall_idx: torch.Tensor,
-        zprime_idx: torch.Tensor,
-        idx_to_hall: dict[int, int],
-        zprime_values: list[float],
-        device: torch.device,
-        with_lambda: bool = True,
-        fallback_selling: torch.Tensor | None = None,
-        fallback_log_density: torch.Tensor | None = None,
-        fallback_log_lambda: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
-        """
-        Build padded polymorph targets for a batch.
-
-        Returns (selling [B,K,6], log_density [B,K], log_lambda [B,K,3] or None).
-        """
-        batch = len(smiles_list)
-        keys: list[PackingKey] = []
-        for i in range(batch):
-            hall = idx_to_hall[int(hall_idx[i].item())]
-            zp = float(zprime_values[int(zprime_idx[i].item())])
-            keys.append((smiles_list[i], hall, zp))
-
-        group_sizes = [len(self.groups.get(k, ())) for k in keys]
-        max_k = max(group_sizes) if group_sizes else 1
-        max_k = max(max_k, 1)
-
-        sell_dim = 6
-        if fallback_selling is not None:
-            sell_dim = int(fallback_selling.shape[-1])
-        elif self.groups:
-            sell_dim = int(next(iter(self.groups.values()))[0][0].shape[0])
-        sell_out = torch.zeros(batch, max_k, sell_dim, device=device)
-        ld_out = torch.zeros(batch, max_k, device=device)
-        lam_out = torch.zeros(batch, max_k, 3, device=device) if with_lambda else None
-
-        for i, key in enumerate(keys):
-            entries = self.groups.get(key)
-            if not entries:
-                if fallback_selling is None or fallback_log_density is None:
-                    raise KeyError(f"No polymorph bank entry for {key}")
-                sell_out[i, 0] = fallback_selling[i]
-                ld_out[i, 0] = fallback_log_density[i]
-                if lam_out is not None and fallback_log_lambda is not None:
-                    lam_out[i, 0] = fallback_log_lambda[i]
-                continue
-            for j, (sell, ld, lam, _lat) in enumerate(entries):
-                sell_out[i, j] = torch.from_numpy(sell).to(device)
-                ld_out[i, j] = ld
-                if lam_out is not None and lam is not None:
-                    lam_out[i, j] = torch.from_numpy(lam).to(device)
-            if len(entries) < max_k:
-                sell_out[i, len(entries) :] = sell_out[i, len(entries) - 1]
-                ld_out[i, len(entries) :] = ld_out[i, len(entries) - 1]
-                if lam_out is not None:
-                    lam_out[i, len(entries) :] = lam_out[i, len(entries) - 1]
-
-        return sell_out, ld_out, lam_out
-
     def batch_lattice_tensors(
         self,
         smiles_list: list[str],

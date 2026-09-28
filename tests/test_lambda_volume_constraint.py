@@ -13,8 +13,7 @@ from cellnet.packing import cell_volume, packing_density, volume_from_density
 
 def test_volume_from_density_roundtrip():
     cp = np.array([8.0, 12.0, 36.0, 90.0, 90.0, 90.0])
-    smiles = "c1ccccc1"
-    rho = packing_density(cp, 78.11, 1.0, 115)
+    rho = packing_density(cp, 78.11, 1.0, 115)  # benzene, MW 78.11
     v = volume_from_density(rho, 78.11, 1.0, 115)
     assert abs(v - cell_volume(cp)) / cell_volume(cp) < 1e-6
 
