@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 _LOCAL_DB = ROOT / "datasets" / "test.db"
 # Fall back to the copy of test.db that PyXtal ships in pyxtal/database.
 DEFAULT_DB = _LOCAL_DB if _LOCAL_DB.is_file() else Path(pyxtal.__file__).resolve().parent / "database" / "test.db"
-DEFAULT_STATS = ROOT / "checkpoints/cellnet_flow_v9" / "stats.json"
+DEFAULT_STATS = ROOT / "checkpoints/cellnet_flow" / "stats.json"
 
 
 def _hall_vocab(stats_path: Path) -> set[int]:

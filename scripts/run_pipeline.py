@@ -247,7 +247,7 @@ def main() -> None:
     parser.add_argument(
         "--checkpoint",
         type=str,
-        default=str(ROOT / "checkpoints/cellnet_flow_v9" / "best.pt"),
+        default=str(ROOT / "checkpoints/cellnet_flow" / "best.pt"),
         help="Flow checkpoint (default: the shipped V9 model)",
     )
     parser.add_argument(

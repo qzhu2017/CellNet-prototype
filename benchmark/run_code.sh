@@ -21,7 +21,7 @@ CODE="${1:?usage: run_code.sh CSD_CODE}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT}/outputs/benchmark}"
 NPROC="${NPROC:-48}"
-CKPT="${CKPT:-${ROOT}/checkpoints/cellnet_flow_v9/best.pt}"
+CKPT="${CKPT:-${ROOT}/checkpoints/cellnet_flow/best.pt}"
 
 mkdir -p "${OUTPUT_DIR}/${CODE}"
 cd "$ROOT"

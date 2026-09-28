@@ -51,7 +51,7 @@ the pipeline selects it explicitly with `--sage 2.0`.
 |------|----------|
 | `cellnet/` | Python package: invariants, flow model, lattice QRS, cell selection, packing pipeline |
 | `scripts/` | Command-line entry points (below) |
-| `checkpoints/cellnet_flow_v9/` | Trained flow (`best.pt`), normalization and Hall vocabulary (`stats.json`), training history |
+| `checkpoints/cellnet_flow/` | Trained flow (`best.pt`), normalization and Hall vocabulary (`stats.json`), training history |
 | `datasets/spade-csp/` | Training and test tables derived from SPaDe-CSP ([details](datasets/README.md)) |
 | `benchmark/` | Benchmark code list, run and summary scripts, per-code results ([details](benchmark/README.md)) |
 | `tests/` | Unit tests |
@@ -123,7 +123,7 @@ python scripts/train_flow.py --precomputed --output-dir outputs/my_flow
 
 The shipped checkpoint (epoch 130 of a 400-epoch run with early stopping) was fine-tuned
 from an earlier flow trained on a smaller split, so training from scratch gives a comparable
-but not identical model. `checkpoints/cellnet_flow_v9/best.pt` stores the full argument list
+but not identical model. `checkpoints/cellnet_flow/best.pt` stores the full argument list
 (`torch.load(...)["args"]`). To rebuild the tables themselves from the SPaDe-CSP release, see
 [`datasets/README.md`](datasets/README.md).
 

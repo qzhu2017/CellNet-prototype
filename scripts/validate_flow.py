@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SPADE_DIR = ROOT / "datasets/spade-csp"
 DEFAULT_TEST = SPADE_DIR / "spade_test.csv"
-DEFAULT_CKPT = ROOT / "checkpoints/cellnet_flow_v9/best.pt"
+DEFAULT_CKPT = ROOT / "checkpoints/cellnet_flow/best.pt"
 DEFAULT_OUT = ROOT / "outputs/flow_k100_test.json"
 
 
