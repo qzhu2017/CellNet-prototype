@@ -1,0 +1,14 @@
+ase>=3.22.0
+numpy>=1.24.0
+scipy>=1.10.0
+torch>=2.0.0
+torch-geometric>=2.5.0
+rdkit>=2022.9.5
+spglib>=2.0.0
+pymatgen>=2023.1.0
+pyxtal>=1.1.5
+pyocse>=0.1.3
+scikit-learn>=1.3.0
+pandas>=2.0.0
+matplotlib>=3.7.0
+tqdm>=4.65.0

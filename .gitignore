@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Run outputs
+outputs/
+
+# Generated training caches and splits (see datasets/README.md)
+datasets/spade-csp/crystal-info_CSD_filtered.csv
+datasets/spade-csp/split_*.csv
+datasets/spade-csp/*_precomputed*
+datasets/test.db
+
+# Editors / OS
+.vscode/
+.DS_Store

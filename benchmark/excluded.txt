@@ -1,0 +1,4 @@
+# Z' <= 1 single-component codes of test.db excluded by the pipeline eligibility check
+# code	reason
+ACRDIN05	pipeline_zprime_2
+ZZZDKE01	pipeline_zprime_2
