@@ -19,7 +19,11 @@ set -euo pipefail
 ROOT="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$ROOT"
 
-# conda activate cellnet   # <- activate the environment from the README here
+# Batch shells don't read ~/.bashrc, so load conda's shell hook first.
+set +u
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate cellnet   # <- activate the environment from the README here
+set -u
 
 mapfile -t CODES < <(grep -vE '^#|^$' benchmark/codes.txt)
 CODE="${CODES[${SLURM_ARRAY_TASK_ID:-0}]}"

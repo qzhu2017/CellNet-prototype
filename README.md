@@ -38,12 +38,18 @@ lattice free to relax and 2 more through a frozen-lattice fallback
 ```bash
 conda create -n cellnet python=3.11
 conda activate cellnet
+conda install -c conda-forge --override-channels \
+  openff-toolkit=0.14.3 openff-interchange=0.3.18 openff-units=0.2.0 openff-models=0.0.4 \
+  openmm=8.0.0 parmed=4.0.0 "pydantic<2" ambertools openbabel
 pip install -r requirements.txt
 ```
 
-Steps 1–3 need only the Python packages. The packing search (step 4) also needs a `charmm`
-executable on `PATH`. The paper used OpenFF **Sage 2.0.0**, the default of pyocse 0.1.3;
-the pipeline selects it explicitly with `--sage 2.0`.
+Steps 1–3 need only the Python packages. The packing search (step 4) needs the conda-forge
+packages: pyocse builds the OpenFF force field through Interchange internals, so keep those
+versions pinned, and PyXtal uses openbabel to rebuild molecules after each CHARMM
+relaxation. It also needs a `charmm` executable on `PATH`. The paper used OpenFF
+**Sage 2.0.0**, the default of pyocse 0.1.3; the pipeline selects it explicitly with
+`--sage 2.0`.
 
 ## Repository layout
 
