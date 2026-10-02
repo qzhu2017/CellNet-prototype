@@ -55,8 +55,8 @@ def test_shipped_results_table_is_self_consistent():
     assert sorted(r["code"] for r in rows) == sorted(codes)
     outcomes = [r["outcome"] for r in rows]
     assert outcomes.count("covered") == 80
-    assert outcomes.count("covered_frozen_lattice") == 2
-    assert outcomes.count("miss") == 2
+    assert outcomes.count("covered_frozen_lattice") == 3
+    assert outcomes.count("miss") == 1
     for r in rows:
         covered = int(r["n_hit_cells"]) > 0
         assert (r["outcome"] == "covered") == covered, r["code"]

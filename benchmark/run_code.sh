@@ -3,15 +3,15 @@
 #
 #   bash benchmark/run_code.sh OBEQUJ                 # -> outputs/benchmark/OBEQUJ/
 #   OUTPUT_DIR=/path/to/out NPROC=32 bash benchmark/run_code.sh OBEQUJ
-#   MAX_CONF_RUNS=64 bash benchmark/run_code.sh OBEQUJ   # fewer cells (paper: 72)
+#   MAX_CONF_RUNS=72 bash benchmark/run_code.sh OBEQUJ   # the earlier 72-cell protocol
 #
 # Protocol: K=96 flow draws (seed 42); lattice QRS with 12 Sobol stages x 1024 points;
-# 72 cells chosen by the cell-blind multichannel selection (lambda consistency 6,
+# 64 cells chosen by the cell-blind multichannel selection (lambda consistency 6,
 # QRS loss 6, density 4, Selling disagreement 4, monoclinic unique-axis alternates 12,
 # shape diversity for the rest); one conformational QRS per cell (20 generations x 96)
 # relaxed with CHARMM + OpenFF Sage 2.0.0, lattice free; if no cell matches the
-# experimental structure, the same 72 cells are searched again with the lattice frozen.
-# All 72 cells are searched (no early stop) so hit counts are comparable.
+# experimental structure, the same 64 cells are searched again with the lattice frozen.
+# All 64 cells are searched (no early stop) so hit counts are comparable.
 #
 # Structures come from datasets/test.db if present, else from the test.db shipped with
 # PyXtal. Needs charmm on PATH. One code takes hours on 48 cores (see README).
@@ -23,7 +23,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT}/outputs/benchmark}"
 NPROC="${NPROC:-48}"
 CKPT="${CKPT:-${ROOT}/checkpoints/cellnet_flow/best.pt}"
-MAX_CONF_RUNS="${MAX_CONF_RUNS:-72}"
+MAX_CONF_RUNS="${MAX_CONF_RUNS:-64}"
 
 # Parallelism comes from NPROC worker processes. Without these limits every worker
 # starts MKL/OpenMP/torch thread pools sized to the whole node (~110 threads each).

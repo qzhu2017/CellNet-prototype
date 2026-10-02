@@ -12,9 +12,10 @@ This repository contains the code, the trained model and the training tables for
 > Unit Cells* (manuscript, 2026).
 
 On the 84 single-component systems with Z′ ≤ 1 of the Zhu & Hattori benchmark, the
-reported protocol reproduces the experimental structure for **82/84 (97.6 %)**: 80 with the
-lattice free to relax and 2 more through a frozen-lattice fallback
-(per-code results in [`benchmark/results.csv`](benchmark/results.csv)).
+reported protocol (64 cells per system) reproduces the experimental structure for
+**83/84 (98.8 %)**: 80 with the lattice free to relax and 3 more through a frozen-lattice
+fallback; one of those three (XAFPAY) rests on a single marginal match. Per-code results are
+in [`benchmark/results.csv`](benchmark/results.csv).
 
 ## How it works
 
@@ -25,7 +26,7 @@ lattice free to relax and 2 more through a frozen-lattice fallback
 2. **Lattice QRS** (`cellnet/qrs.py`). Each draw is inverted to cell parameters of the given
    Hall setting by a 12-stage Sobol search that matches λ, λ\*, the Selling scalars and the
    density.
-3. **Cell selection** (`cellnet/lattice_conf_pipeline.py`). Duplicates are removed and 72 cells
+3. **Cell selection** (`cellnet/lattice_conf_pipeline.py`). Duplicates are removed and 64 cells
    are chosen without reference to any experimental structure: fixed quotas by λ
    consistency, QRS loss, density, Selling disagreement and (monoclinic only) alternative
    unique-axis assignments, then shape diversity.
@@ -90,7 +91,7 @@ Run the packing search as well, with the paper's cell budget and search settings
 ```bash
 python scripts/run_pipeline.py \
   --smiles "CC(=O)Oc1ccccc1C(=O)O" --hall 81 --zprime 1 --sage 2.0 \
-  --k 96 --conf-selection multichannel --max-conf-runs 72 --cell-blind \
+  --k 96 --conf-selection multichannel --max-conf-runs 64 --cell-blind \
   --conf-qrs-origin-only --conf-npop 96 --no-conf-check-stable \
   --relax-lattice --conf-nproc 48 --tag aspirin
 ```
