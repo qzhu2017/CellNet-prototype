@@ -25,6 +25,13 @@ NPROC="${NPROC:-48}"
 CKPT="${CKPT:-${ROOT}/checkpoints/cellnet_flow/best.pt}"
 MAX_CONF_RUNS="${MAX_CONF_RUNS:-72}"
 
+# Parallelism comes from NPROC worker processes. Without these limits every worker
+# starts MKL/OpenMP/torch thread pools sized to the whole node (~110 threads each).
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
+
 mkdir -p "${OUTPUT_DIR}/${CODE}"
 cd "$ROOT"
 
