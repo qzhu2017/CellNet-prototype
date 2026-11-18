@@ -25,6 +25,10 @@ from time import perf_counter
 import numpy as np
 import torch
 
+from cellnet import pyxtal_patches as _pyxtal_patches
+
+_pyxtal_patches.apply()  # PyXtal to_pyxtal shadowing bug (cocrystal A.B.B); see the module
+
 from cellnet.hybrid_qrs import (
     ConflictResolutionConfig,
     apply_lambda_volume_constraint,
@@ -117,6 +121,11 @@ def save_flow_batch(
             else np.empty((0,), dtype=np.float64)
         ),
         axis_permutation_source=flow.axis_permutation_source,
+        draw_rho=(
+            np.asarray(flow.draw_rho, dtype=np.float64)
+            if flow.draw_rho is not None
+            else np.empty((0,), dtype=np.float64)
+        ),
     )
 
 
@@ -161,6 +170,11 @@ def load_flow_batch(path: str | Path) -> FlowSampleBatch:
             if "axis_permutation_source" in data
             else "legacy"
         ),
+        draw_rho=(
+            np.asarray(data["draw_rho"], dtype=np.float64)
+            if "draw_rho" in data and data["draw_rho"].size
+            else None
+        ),
     )
 
 
@@ -179,6 +193,14 @@ class FlowSampleBatch:
     all_axis_rank_permutations: np.ndarray | None = None
     axis_permutation_probabilities: np.ndarray | None = None
     axis_permutation_source: str = "default"
+    # Per-draw densities (g/cm³) from the auxiliary density mixture; None = every draw
+    # uses target_rho (the flow model's single deterministic density).
+    draw_rho: np.ndarray | None = None
+
+    def rho_for_draw(self, flow_idx: int) -> float:
+        if self.draw_rho is not None:
+            return float(self.draw_rho[flow_idx])
+        return float(self.target_rho)
 
     def axis_ranks_for_draw(self, flow_idx: int) -> tuple[int, int, int]:
         if self.all_axis_rank_permutations is not None:
@@ -572,7 +594,11 @@ def sample_flow_batch(
     k: int = 100,
     device: torch.device | None = None,
     seed: int | None = None,
+    aux_checkpoint: str | Path | None = None,
 ) -> FlowSampleBatch:
+    """K flow draws. With ``aux_checkpoint`` each draw gets its own density sampled from the
+    auxiliary density mixture p(ρ | molecule, Hall, Z′) and is rescaled to that volume;
+    otherwise all draws share the flow model's single predicted density."""
     if seed is not None:
         set_random_seed(seed)
 
@@ -597,10 +623,23 @@ def sample_flow_batch(
     all_log_lambda_recip = denorm_log_reciprocal_lambda(pred_lr_norm, stats)
 
     cr_cfg = ConflictResolutionConfig(lambda_volume_constraint=True)
-    target_volume = target_volume_from_density(target_rho, smiles, zprime, hall_number)
-    all_log_lambda, _, _ = apply_lambda_volume_constraint(
-        all_log_lambda, target_volume, cr_cfg, stats=stats
-    )
+    draw_rho = None
+    if aux_checkpoint is not None:
+        from cellnet.aux_inference import sample_densities
+
+        draw_rho = sample_densities(aux_checkpoint, smiles, hall_number, zprime, k, seed=seed)
+        target_rho = float(np.median(draw_rho))  # reference for the selection's density channel
+        rows = []
+        for j in range(k):
+            v_j = target_volume_from_density(float(draw_rho[j]), smiles, zprime, hall_number)
+            adj, _, _ = apply_lambda_volume_constraint(all_log_lambda[j : j + 1], v_j, cr_cfg, stats=stats)
+            rows.append(adj[0])
+        all_log_lambda = np.stack(rows, axis=0)
+    else:
+        target_volume = target_volume_from_density(target_rho, smiles, zprime, hall_number)
+        all_log_lambda, _, _ = apply_lambda_volume_constraint(
+            all_log_lambda, target_volume, cr_cfg, stats=stats
+        )
 
     axis_logits = getattr(model, "_last_axis_permutation_logits", None)
     if axis_logits is not None:
@@ -645,6 +684,7 @@ def sample_flow_batch(
         all_axis_rank_permutations=all_axis_ranks,
         axis_permutation_probabilities=axis_probs,
         axis_permutation_source=axis_source,
+        draw_rho=draw_rho,
     )
 
 
@@ -662,7 +702,7 @@ def _lattice_qrs_record(
         smiles=flow.smiles,
         hall_number=flow.hall_number,
         zprime=flow.zprime,
-        target_rho=flow.target_rho,
+        target_rho=flow.rho_for_draw(flow_idx),
         log_lambda=flow.all_log_lambda[flow_idx],
         log_lambda_recip=flow.all_log_lambda_recip[flow_idx],
         target_selling=flow.all_selling[flow_idx],
@@ -903,7 +943,7 @@ def run_lattice_qrs_batch(
             flow.smiles,
             flow.hall_number,
             flow.zprime,
-            flow.target_rho,
+            flow.rho_for_draw(j),
             {**cfg_dict, "seed": qrs_seed + j},
             use_selling,
             flow.all_selling[j],
@@ -1013,6 +1053,9 @@ def lattice_records_from_selling(
     records: list[LatticeQRSRecord] = []
     skipped = 0
     for i in range(flow.k):
+        draw_volume = target_volume_from_density(
+            flow.rho_for_draw(i), flow.smiles, flow.zprime, flow.hall_number
+        )
         try:
             cellpar = cellpar_from_selling(flow.all_selling[i], flow.hall_number)
             cellpar = _finalize_lattice_qrs_cellpar(
@@ -1030,7 +1073,7 @@ def lattice_records_from_selling(
         cellpar = np.asarray(cellpar, dtype=np.float64)
         if not cellpar_in_predicted_volume_range(
             cellpar,
-            target_volume,
+            draw_volume,
             density_ratio_factor=density_ratio_factor,
         ):
             skipped += 1
@@ -1040,7 +1083,7 @@ def lattice_records_from_selling(
                 flow_idx=i,
                 cellpar=cellpar,
                 qrs_loss=float("inf"),
-                density=float(flow.target_rho),
+                density=float(flow.rho_for_draw(i)),
                 lambda_mse=lam_mse,
                 lambda_recip_mse=0.0,
                 source="selling",
@@ -2322,8 +2365,15 @@ def _pyxtal_db_paths(extra: str | Path | None = None) -> list[Path]:
     return unique
 
 
-def load_crystal_from_db(db_path: str | Path, csd_code: str) -> DbCrystalInfo:
-    """Load SMILES, symmetry, Z′, and cell parameters from a PyXtal ASE database."""
+def load_crystal_from_db(
+    db_path: str | Path, csd_code: str, *, keep_special: bool = False
+) -> DbCrystalInfo:
+    """Load SMILES, symmetry, Z′, and cell parameters from a PyXtal ASE database.
+
+    By default a molecule on a special position is moved to a subgroup where it sits on a
+    general position (e.g. Fdd2 Z′ = 0.5 -> A1n1 Z′ = 1). With ``keep_special`` the
+    crystal's own group and site are kept, so Z′ can be fractional (0.5, 0.25, ...).
+    """
     from pyxtal.db import database
 
     db_path = Path(db_path)
@@ -2336,7 +2386,7 @@ def load_crystal_from_db(db_path: str | Path, csd_code: str) -> DbCrystalInfo:
 
     row = db.get_row(code=csd_code)
     xtal = db.get_pyxtal(code=csd_code)
-    if xtal.has_special_site():
+    if xtal.has_special_site() and not keep_special:
         xtal = xtal.to_subgroup()
 
     zprime_vals = xtal.get_zprime()
@@ -2356,7 +2406,9 @@ def load_crystal_from_db(db_path: str | Path, csd_code: str) -> DbCrystalInfo:
     )
 
 
-def _load_pyxtal_from_db(csd_code: str, db_path: str | Path | None = None):
+def _load_pyxtal_from_db(
+    csd_code: str, db_path: str | Path | None = None, *, keep_special: bool = False
+):
     from pyxtal.db import database
 
     for path in _pyxtal_db_paths(db_path):
@@ -2365,7 +2417,7 @@ def _load_pyxtal_from_db(csd_code: str, db_path: str | Path | None = None):
             if csd_code not in db.get_all_codes():
                 continue
             xtal = db.get_pyxtal(code=csd_code)
-            if xtal.has_special_site():
+            if xtal.has_special_site() and not keep_special:
                 xtal = xtal.to_subgroup()
             return xtal
         except Exception:
@@ -2373,8 +2425,136 @@ def _load_pyxtal_from_db(csd_code: str, db_path: str | Path | None = None):
     return None
 
 
+def _site_needs_inversion(wps) -> bool:
+    """True if any of these Wyckoff sites has an inversion centre in its site symmetry."""
+    for wp in wps or []:
+        for op in wp.get_site_symm_wo_translation():
+            if np.allclose(op.rotation_matrix, -np.eye(3)):
+                return True
+    return False
+
+
+def _centrosymmetric_conformers(smi: str, wps, *, n_seeds: int = 10, n_embed: int = 30,
+                                max_keep: int = 30, e_window: float = 20.0, tol: float = 0.5):
+    """Build conformers with an exact inversion centre (point group Ci or higher).
+
+    ETKDG + MMFF rarely lands exactly on a centrosymmetric conformer (HMX: none in 67, the
+    nearest 0.97 Å RMS away, although β-HMX sits on an inversion centre). Here every
+    fixed-point-free involution of the molecular graph (an atom pairing i <-> p(i)) is
+    tried as the inversion: each embedded conformer is projected onto x_i = -x_p(i)
+    (average of the conformer and its inverted copy), then MMFF-minimised; MMFF is
+    invariant under the pairing, so the minimisation keeps the inversion centre. Kept only if
+    the stereochemistry still matches the SMILES (an enantiopure chiral molecule never
+    passes; a meso molecule does), the MMFF energy is within ``e_window`` kcal/mol of the
+    lowest, and the conformer fits ``wps``. Uses the SMILES alone.
+    """
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+    from pyxtal.molecule import pyxtal_molecule
+
+    mol = Chem.AddHs(Chem.MolFromSmiles(smi))
+    n = mol.GetNumAtoms()
+    ref = Chem.MolToSmiles(Chem.MolFromSmiles(smi))
+    ident = np.arange(n)
+    invols, seen_heavy = [], set()
+    for match in mol.GetSubstructMatches(mol, uniquify=False, useChirality=False, maxMatches=20000):
+        p = np.asarray(match)
+        if np.all(p[p] == ident) and np.all(p != ident):
+            heavy = tuple(p[i] for i in range(n) if mol.GetAtomWithIdx(i).GetAtomicNum() > 1)
+            # H pairings within one heavy pairing give the same geometry after minimisation
+            if heavy not in seen_heavy:
+                seen_heavy.add(heavy)
+                invols.append(p)
+    if not invols:
+        return []
+    m0 = pyxtal_molecule(smi + ".smi", fix=True)
+    cands = []
+    for seed in range(n_seeds):
+        work = Chem.Mol(mol)
+        ps = AllChem.ETKDGv3()
+        ps.randomSeed = 1000 + seed
+        cids = list(AllChem.EmbedMultipleConfs(work, n_embed, ps))
+        if not cids:
+            continue
+        AllChem.MMFFOptimizeMoleculeConfs(work)
+        props = AllChem.MMFFGetMoleculeProperties(work)
+        for cid in cids:
+            x0 = work.GetConformer(cid).GetPositions()
+            x0 = x0 - x0.mean(0)
+            for p in invols:
+                xs = 0.5 * (x0 - x0[p])
+                if np.abs(xs - x0).max() > 2.0:  # too far from this pairing to be worth relaxing
+                    continue
+                trial = Chem.Mol(work)
+                trial.RemoveAllConformers()
+                conf = Chem.Conformer(n)
+                for i in range(n):
+                    conf.SetAtomPosition(i, xs[i].tolist())
+                trial.AddConformer(conf, assignId=True)
+                ff = AllChem.MMFFGetMoleculeForceField(trial, props)
+                if ff is None:
+                    continue
+                ff.Minimize(maxIts=2000)
+                x1 = trial.GetConformer().GetPositions()
+                x1 = x1 - x1.mean(0)
+                if np.abs(x1 + x1[p]).max() > 0.05:
+                    continue
+                x1 = 0.5 * (x1 - x1[p])
+                for i in range(n):
+                    trial.GetConformer().SetAtomPosition(i, x1[i].tolist())
+                Chem.AssignStereochemistryFrom3D(trial)
+                if Chem.MolToSmiles(Chem.RemoveHs(trial)) != ref:
+                    continue
+                cands.append((ff.CalcEnergy(), trial))
+    if not cands:
+        return []
+    cands.sort(key=lambda t: t[0])
+    e_min = cands[0][0]
+    out = []
+    for e, trial in cands:
+        if e > e_min + e_window or len(out) >= max_keep:
+            break
+        m = m0.copy()
+        xyz = m.align(trial.GetConformer())
+        m.reset_positions(xyz)
+        try:
+            m.get_symmetry(symmetrize=True)
+        except Exception:
+            continue
+        m.energy = e
+        if not m.get_orientations_in_wps(wps)[1]:
+            continue
+        if any(ref_m.get_rmsd2(xyz, ref_m.mol.cart_coords)[0] < tol for ref_m in out):
+            continue
+        out.append(m)
+    return out
+
+
 def _pregen_component_pool(smi: str, wps, *, n_iter: int = 20, n_conf: int = 200):
-    """Mirror qrs_conf.pregen_component_pool without version-specific kwargs."""
+    """Mirror qrs_conf.pregen_component_pool without version-specific kwargs.
+
+    For a site with an inversion centre the pool also gets conformers built with an exact
+    inversion centre (_centrosymmetric_conformers), which ETKDG alone often misses."""
+    pool, kind = _pregen_component_pool_base(smi, wps, n_iter=n_iter, n_conf=n_conf)
+    if _site_needs_inversion(wps) and smi not in _single_smiles():
+        try:
+            extra = _centrosymmetric_conformers(smi.strip(), wps)
+        except Exception as exc:  # keep the ETKDG pool
+            print(f"  centrosymmetric conformer build failed ({exc})", flush=True)
+            extra = []
+        if extra:
+            pool = list(pool or []) + extra
+            kind = f"{kind}+ci{len(extra)}"
+    return pool, kind
+
+
+def _single_smiles():
+    from pyxtal.constants import single_smiles
+
+    return single_smiles
+
+
+def _pregen_component_pool_base(smi: str, wps, *, n_iter: int = 20, n_conf: int = 200):
     from pyxtal.constants import single_smiles
     from pyxtal.molecule import generate_molecules, pyxtal_molecule
 
@@ -2504,6 +2684,102 @@ def _store_forcefield_info(
         }
 
 
+def _mirror_molecule(m):
+    """Exact mirror image (x -> -x) of a pyxtal_molecule conformer, same atom order."""
+    m2 = m.copy()
+    m2.reset_positions(-np.asarray(m.mol.cart_coords))
+    try:
+        m2.get_symmetry(symmetrize=False)
+    except Exception:
+        pass
+    return m2
+
+
+def _cluster_conformers(pool, per_cluster: int = 12) -> list[list]:
+    """Split a conformer pool into groups of similar conformers (farthest-point leaders,
+    each conformer to its nearest leader, heavy-atom-aligned RMSD), largest first."""
+    n = len(pool)
+    k = max(1, int(np.ceil(n / per_cluster)))
+    if k == 1:
+        return [list(pool)]
+    xyz = [np.asarray(m.mol.cart_coords) for m in pool]
+
+    def rms(i, j):
+        return float(pool[i].get_rmsd2(xyz[j], xyz[i])[0])
+
+    energies = [getattr(m, "energy", 0.0) or 0.0 for m in pool]
+    leaders = [int(np.argmin(energies))]
+    dmin = np.array([rms(leaders[0], j) for j in range(n)])
+    while len(leaders) < k:
+        nxt = int(np.argmax(dmin))
+        leaders.append(nxt)
+        dmin = np.minimum(dmin, [rms(nxt, j) for j in range(n)])
+    groups = [[] for _ in leaders]
+    for j in range(n):
+        groups[int(np.argmin([rms(li, j) for li in leaders]))].append(pool[j])
+    out = []
+    for g in groups:
+        # keep every cluster small: copy 1 x copy 2 combinations grow as size^2
+        out.extend(_cluster_conformers(g, per_cluster) if len(g) > 2 * per_cluster and len(g) < n else [g])
+    return sorted((g for g in out if g), key=len, reverse=True)
+
+
+def split_components(smiles: str) -> tuple[list[str], list[int]]:
+    """Formula-unit SMILES -> distinct components (first-appearance order) and their counts.
+    'HMX.CL20.CL20' -> (['HMX', 'CL20'], [1, 2]). A single molecule gives ([smi], [1])."""
+    comps, counts = [], []
+    for part in (p.strip() for p in str(smiles).split(".")):
+        if not part:
+            continue
+        if part in comps:
+            counts[comps.index(part)] += 1
+        else:
+            comps.append(part)
+            counts.append(1)
+    return comps, counts
+
+
+def parse_component_wyckoff(wyckoff: str) -> list[list[str]]:
+    """Cocrystal site specification, one ';'-separated group per component (same order as
+    split_components): '4e;2a' -> [['4e'], ['2a']]; '4e,4e;1a' -> [['4e', '4e'], ['1a']]."""
+    return [parse_wyckoff_labels(part) for part in str(wyckoff).split(";")]
+
+
+def _build_multicomponent_template(smiles, hall_number, lattice, cellpar, system, wyckoff, site_species, seed):
+    """Random packing for a cocrystal: each component on its own listed Wyckoff sites."""
+    from pyxtal import pyxtal
+    from pyxtal.lattice import Lattice
+    from pyxtal.molecule import pyxtal_molecule
+    from pyxtal.symmetry import Group
+
+    comps, _ = split_components(smiles)
+    per = parse_component_wyckoff(wyckoff)
+    if len(per) != len(comps):
+        raise ValueError(f"--wyckoff {wyckoff!r} has {len(per)} site groups for {len(comps)} components")
+    grp = Group(hall_number, use_hall=True)
+    num = [sum(grp.get_wyckoff_position(lab).multiplicity for lab in labs) for labs in per]
+    species = [
+        (site_species[i] if site_species and site_species[i] is not None
+         else pyxtal_molecule(c + ".smi", fix=True))
+        for i, c in enumerate(comps)
+    ]
+    a, b, c, alpha, beta, gamma = cellpar
+    roomy = Lattice.from_para(a * 1.6, b * 1.6, c * 1.6, alpha, beta, gamma, ltype=system, force_symmetry=True)
+    xtal = pyxtal(molecular=True)
+    xtal.from_random(dim=3, group=hall_number, species=species, numIons=num, sites=per,
+                     lattice=roomy, use_hall=True, seed=seed, max_count=30)
+    xtal.lattice = lattice
+    return xtal
+
+
+def parse_wyckoff_labels(wyckoff: str) -> list[str]:
+    """'8a' -> ['8a']; '2b,2c' -> ['2b', '2c'] (one molecule on each listed site)."""
+    labels = [w.strip() for w in str(wyckoff).split(",") if w.strip()]
+    if not labels:
+        raise ValueError(f"empty Wyckoff specification {wyckoff!r}")
+    return labels
+
+
 def build_pyxtal_template(
     smiles: str,
     hall_number: int,
@@ -2513,7 +2789,16 @@ def build_pyxtal_template(
     *,
     csd_code: str | None = None,
     db_path: str | Path | None = None,
+    keep_special: bool = False,
+    wyckoff: str | None = None,
+    site_species=None,
 ):
+    """PyXtal template that fixes the group, Wyckoff sites and lattice for the conf QRS.
+
+    ``keep_special`` keeps a molecule on a special position instead of moving it to a
+    subgroup. ``wyckoff`` (random-packing path only, e.g. "8a") puts every molecule on
+    that site; ``site_species`` is then a pyxtal_molecule whose symmetry fits the site.
+    """
     from pyxtal import pyxtal
     from pyxtal.lattice import Lattice
     from pyxtal.molecule import pyxtal_molecule
@@ -2532,10 +2817,18 @@ def build_pyxtal_template(
     )
 
     if csd_code:
-        ref = _load_pyxtal_from_db(csd_code, db_path=db_path)
+        ref = _load_pyxtal_from_db(csd_code, db_path=db_path, keep_special=keep_special)
+        if ref is not None and ref.group.hall_number != hall_number:
+            # Run asked for another setting of the same group (--hall), e.g. A 1 n 1 -> C 1 c 1.
+            ref.optimize_lattice(standard=True)
+            if ref.group.hall_number != hall_number:
+                raise ValueError(
+                    f"CSD template {csd_code!r} is in Hall {ref.group.hall_number}, "
+                    f"run requested Hall {hall_number}"
+                )
         if ref is not None:
             ref.lattice = lattice
-            if ref.has_special_site():
+            if ref.has_special_site() and not keep_special:
                 ref = ref.to_subgroup()
             return ref
         # A random packing is a different experiment from a CSD template
@@ -2546,20 +2839,63 @@ def build_pyxtal_template(
             flush=True,
         )
 
+    if (wyckoff and ";" in str(wyckoff)) or len(split_components(smiles)[0]) > 1:
+        if not wyckoff:
+            raise ValueError("a cocrystal run needs --wyckoff with one site group per component, e.g. '4e;4e'")
+        return _build_multicomponent_template(smiles, hall_number, lattice, cellpar, system, wyckoff,
+                                              site_species, seed)
     z_mols = int(round(zprime_to_Z(zprime, hall_number)))
-    mol = pyxtal_molecule(smiles.strip() + ".smi", fix=True)
+    mol = site_species if site_species is not None else pyxtal_molecule(smiles.strip() + ".smi", fix=True)
+    sites = None
+    if wyckoff:
+        from pyxtal.symmetry import Group
+
+        grp = Group(hall_number, use_hall=True)
+        labels = parse_wyckoff_labels(wyckoff)
+        if len(labels) == 1:
+            mult = grp.get_wyckoff_position(labels[0]).multiplicity
+            if z_mols % mult:
+                raise ValueError(
+                    f"Z = {z_mols} (Z′ {zprime:g}) is not a multiple of site {wyckoff} "
+                    f"(multiplicity {mult}) in Hall {hall_number}"
+                )
+            sites = [labels * (z_mols // mult)]
+        else:
+            # Several different sites, one molecule on each, e.g. "2b,2c" in P2_1/c: two
+            # half-molecules on two different inversion centres (Z′ = 1 in total).
+            mults = [grp.get_wyckoff_position(lab).multiplicity for lab in labels]
+            if sum(mults) != z_mols:
+                raise ValueError(
+                    f"sites {wyckoff} hold {sum(mults)} molecules per cell, but Z′ {zprime:g} "
+                    f"in Hall {hall_number} needs Z = {z_mols}"
+                )
+            sites = [labels]
+    elif float(zprime).is_integer() and zprime >= 1:
+        # Whole molecules on the general position, Z′ copies (otherwise PyXtal may pick
+        # special sites and the run would silently end up in a subgroup).
+        from pyxtal.symmetry import Group
+
+        gp = Group(hall_number, use_hall=True)[0]
+        sites = [[gp.get_label()] * int(zprime)]
+    # The template only fixes the Wyckoff sites; the search receives the real cell through
+    # template.lattice. Random placement at a realistic density often fails PyXtal's attempt
+    # limit, so place the molecules in an enlarged cell (edges x1.6) and then swap in the
+    # real lattice, as the CSD-template path does (ref.lattice = lattice).
+    roomy = Lattice.from_para(a * 1.6, b * 1.6, c * 1.6, alpha, beta, gamma, ltype=system, force_symmetry=True)
     xtal = pyxtal(molecular=True)
     xtal.from_random(
         dim=3,
         group=hall_number,
         species=[mol],
         numIons=[z_mols],
-        lattice=lattice,
+        sites=sites,
+        lattice=roomy,
         use_hall=True,
         seed=seed,
         max_count=30,
     )
-    if xtal.has_special_site():
+    xtal.lattice = lattice
+    if xtal.has_special_site() and not keep_special:
         xtal = xtal.to_subgroup()
     return xtal
 
@@ -2587,6 +2923,10 @@ def run_conf_qrs_one(
     relax_lattice: bool = False,
     check_stable: bool = True,
     enable_reference_matching: bool = True,
+    keep_special: bool = False,
+    wyckoff: str | None = None,
+    z2_pairing: str | None = None,
+    pair_box: int = 0,
 ) -> ConfQRSRecord:
     qrs_conf = _import_qrs_conf_helpers()
     from pymatgen.analysis.structure_matcher import StructureMatcher
@@ -2594,15 +2934,107 @@ def run_conf_qrs_one(
 
     set_random_seed(seed)
     workdir.mkdir(parents=True, exist_ok=True)
-    template = build_pyxtal_template(
-        smiles,
-        hall_number,
-        zprime,
-        cellpar,
-        seed=seed,
-        csd_code=csd_code,
-        db_path=db_path,
-    )
+    site_species = None
+    comps, _ = split_components(smiles)
+    multi = len(comps) > 1 or bool(wyckoff and ";" in str(wyckoff))
+    if multi:
+        # Cocrystal: each component goes on its own sites; a component on special sites
+        # needs a conformer that already has that site symmetry.
+        from pyxtal.symmetry import Group
+
+        if not wyckoff:
+            raise ValueError("a cocrystal run needs --wyckoff with one site group per component, e.g. '4e;4e'")
+        grp = Group(hall_number, use_hall=True)
+        site_species = []
+        for comp, labs in zip(comps, parse_component_wyckoff(wyckoff)):
+            wps = [grp.get_wyckoff_position(lab) for lab in labs]
+            special = [w for w in wps if w.multiplicity < len(grp[0])]
+            if not special:
+                site_species.append(None)
+                continue
+            symms = {w.get_site_symmetry_object().name for w in special}
+            if len(special) != len(wps) or len(symms) > 1:
+                raise ValueError(f"component {comp}: sites {labs} mix site symmetries {sorted(symms)} / general")
+            pool, _ = _get_component_pool(comp, [special[0]], qrs_conf, component_pool_cache)
+            if not pool:
+                raise RuntimeError(f"No conformer of {comp} fits site {labs[0]} in Hall {hall_number}")
+            site_species.append(pool[0])
+    elif wyckoff and not csd_code:
+        # The random packing needs a conformer that already has the site symmetry.
+        from pyxtal.symmetry import Group
+
+        grp = Group(hall_number, use_hall=True)
+        site_wps = [grp.get_wyckoff_position(lab) for lab in parse_wyckoff_labels(wyckoff)]
+        symms = {wp.get_site_symmetry_object().name for wp in site_wps}
+        if len(symms) > 1:
+            # One molecule species is placed on every listed site, so they must share the
+            # site symmetry (e.g. all inversion centres).
+            raise ValueError(f"sites {wyckoff} have different site symmetries {sorted(symms)}")
+        site_wp = site_wps[0]
+        site_pool, _ = _get_component_pool(
+            smiles.strip(), [site_wp], qrs_conf, component_pool_cache
+        )
+        if not site_pool:
+            raise RuntimeError(
+                f"No conformer of {smiles.strip()} fits site {wyckoff} "
+                f"(site symmetry {site_wp.site_symm}) in Hall {hall_number}"
+            )
+        site_species = site_pool[0]
+    # Z′ = 2 conformer pairing. PyXtal's QRS puts the same conformer on every site of one
+    # molecule type, so with one type the two copies are always identical (same
+    # handedness). OSEWEQ needs a (+,+) and a (-,-) propeller. Here the copies become two
+    # molecule types with the same SMILES: copy 1 takes one cluster of similar conformers,
+    # copy 2 the same cluster ("twin": different conformers, same family) or its exact
+    # mirror images ("mirror"). The cluster cycles with pair_box so all are covered.
+    pair_pools = None
+    if (z2_pairing in ("mirror", "twin") and not multi and not wyckoff and not csd_code
+            and abs(float(zprime) - 2.0) < 1e-6):
+        from pyxtal.symmetry import Group
+
+        grp = Group(hall_number, use_hall=True)
+        gp = grp[0]
+        full, _ = _get_component_pool(smiles.strip(), [gp], qrs_conf, component_pool_cache)
+        if not full:
+            raise RuntimeError(f"No conformer pool for {smiles.strip()}")
+        ckey = ("clusters", smiles.strip())
+        if component_pool_cache is not None and ckey in component_pool_cache:
+            clusters = component_pool_cache[ckey]
+        else:
+            clusters = _cluster_conformers(full)
+            if component_pool_cache is not None:
+                component_pool_cache[ckey] = clusters
+        k = int(pair_box) % len(clusters)
+        pool0 = [m.copy() for m in clusters[k]]
+        pool1 = [_mirror_molecule(m) for m in clusters[k]] if z2_pairing == "mirror" else [m.copy() for m in clusters[k]]
+        pair_pools = [pool0, pool1]
+        print(f"Z′=2 pairing '{z2_pairing}': conformer cluster {k + 1}/{len(clusters)} "
+              f"({len(pool0)} conformers) for copy 1, {'mirror images' if z2_pairing == 'mirror' else 'same cluster'} "
+              f"for copy 2", flush=True)
+        from pyxtal import pyxtal as _pyxtal
+        from pyxtal.lattice import Lattice
+
+        a, b, c, alpha, beta, gamma = cellpar
+        system = crystal_system_from_hall(hall_number)
+        lat = Lattice.from_para(a, b, c, alpha, beta, gamma, ltype=system, force_symmetry=True)
+        roomy = Lattice.from_para(a * 1.6, b * 1.6, c * 1.6, alpha, beta, gamma, ltype=system, force_symmetry=True)
+        template = _pyxtal(molecular=True)
+        template.from_random(dim=3, group=hall_number, species=[pool0[0], pool1[0]],
+                             numIons=[len(gp), len(gp)], sites=[[gp.get_label()], [gp.get_label()]],
+                             lattice=roomy, use_hall=True, seed=seed, max_count=30)
+        template.lattice = lat
+    if pair_pools is None:
+        template = build_pyxtal_template(
+            smiles,
+            hall_number,
+            zprime,
+            cellpar,
+            seed=seed,
+            csd_code=csd_code,
+            db_path=db_path,
+            keep_special=keep_special or bool(wyckoff),
+            wyckoff=wyckoff,
+            site_species=site_species,
+        )
 
     type_wps: list[list] = [[] for _ in range(len(template.numMols))]
     for site in template.mol_sites:
@@ -2610,9 +3042,9 @@ def run_conf_qrs_one(
 
     molecules = []
     smi = smiles.strip()
-    for type_idx, wps in enumerate(type_wps):
+    for type_idx, wps in enumerate([] if pair_pools is not None else type_wps):
         pool, _pool_kind = _get_component_pool(
-            smi, wps, qrs_conf, component_pool_cache
+            comps[type_idx] if multi else smi, wps, qrs_conf, component_pool_cache
         )
         if pool is None or len(pool) == 0:
             raise RuntimeError(f"No conformer pool for component {type_idx} ({smi})")
@@ -2620,10 +3052,25 @@ def run_conf_qrs_one(
             raise RuntimeError(f"All conformers filtered for component {type_idx}")
         molecules.append(pool)
 
+    if pair_pools is not None:
+        molecules = pair_pools
     sites = qrs_conf.build_sites_from_reference(template)
 
     n_conformers = sum(len(p) for p in molecules)
-    composition = [int(a) for a in template.get_zprime()]
+    # PyXtal's QRS reads composition as the number of sites per molecule type (it loops
+    # range(count) over sites). That equals Z′ for general positions, but a molecule on a
+    # special position is one site carrying a fraction of a molecule (Fdd2 8a: Z′ = 0.5),
+    # so count sites rather than taking int(Z′), which would give 0.
+    composition = [len(wps) for wps in type_wps]
+    has_special_site = any(
+        wp.multiplicity < len(template.group[0]) for wps in type_wps for wp in wps
+    )
+    # PyXtal's QRS searches general positions only: it discards any candidate on a special
+    # site and samples all three rotation angles, which a symmetric site does not allow.
+    # Special-site runs therefore use PyXtal's DFS, whose random generator puts the molecule
+    # on the site with an allowed orientation (then relaxes it in a subgroup). DFS reads
+    # composition as Z′ (molecules per asymmetric unit), e.g. [0.5] for Fdd2 8a.
+    dfs_composition = [float(z) for z in template.get_zprime()]
     selected_deltas = qrs_conf.select_delta_angle(molecules, composition)
     soft_clash_buffer, _ = qrs_conf.select_soft_clash_buffer(
         molecules, template.lattice, composition
@@ -2634,6 +3081,12 @@ def run_conf_qrs_one(
     if param_xml.exists():
         param_xml.unlink()
 
+    if multi:
+        # PyXtal takes one SMILES per molecule type; the formula-unit multiplicity is in
+        # the composition (site counts), not in repeated SMILES.
+        smiles = ".".join(comps)
+    elif pair_pools is not None:
+        smiles = f"{smi}.{smi}"  # two molecule types, same molecule
     qrs_kwargs = {
         "smiles": smiles,
         "workdir": str(workdir),
@@ -2666,7 +3119,18 @@ def run_conf_qrs_one(
         )
     import inspect
 
-    supported = set(inspect.signature(QRS.__init__).parameters) - {"self"}
+    if has_special_site:
+        from pyxtal.optimize import DFS
+
+        optimizer_cls = DFS
+        qrs_kwargs["composition"] = dfs_composition
+        print(
+            f"Special site {sites} (Z′ {dfs_composition}): conformer search with PyXtal DFS",
+            flush=True,
+        )
+    else:
+        optimizer_cls = QRS
+    supported = set(inspect.signature(optimizer_cls.__init__).parameters) - {"self"}
     optional = {
         "soft_clash_check": True,
         "soft_clash_buffer": soft_clash_buffer,
@@ -2676,7 +3140,19 @@ def run_conf_qrs_one(
     }
     qrs_kwargs.update({k: v for k, v in optional.items() if k in supported})
     setup_started = perf_counter()
-    qrs = QRS(**{k: v for k, v in qrs_kwargs.items() if k in supported})
+    qrs = optimizer_cls(**{k: v for k, v in qrs_kwargs.items() if k in supported})
+    if hasattr(qrs, "N_torsion"):
+        # PyXtal sizes its torsion buffer (used only by the Gaussian energy bias,
+        # base._apply_gaussian) as n_torsions x int(max(Z′, 1)) per molecule type. It
+        # writes n_torsions values per molecule record but advances by n_torsions + 1, and
+        # DFS relaxes in a subgroup where one site can split into several records (P2_1/n
+        # HMX on 2a + DMDNMDA on 4e -> 3 records in P2_1), so the buffer overflows for
+        # special sites and cocrystals. Size it for every molecule in the cell (the P1
+        # worst case, as the HTOCSP cocrystal scripts do); extra slots stay zero.
+        # (The shared PyXtal install is not edited.)
+        n_cell_records = sum(wp.multiplicity for wps in type_wps for wp in wps)
+        n_tor = max((len(getattr(pool[0], "torsionlist", None) or []) for pool in molecules), default=0)
+        qrs.N_torsion = max(int(qrs.N_torsion), n_cell_records * (n_tor + 1))
     setup_time_min = (perf_counter() - setup_started) / 60.0
     if cached_forcefield_info is None:
         _store_forcefield_info(

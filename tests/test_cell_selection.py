@@ -180,12 +180,19 @@ def test_target_free_quota_backfills_missing_selling_cells_with_qrs():
 
 def test_reference_matching_can_be_disabled_without_losing_csd_template(monkeypatch, tmp_path):
     calls = {}
-    wp = SimpleNamespace(letter="a")
+    # the general position of P-1 (2i, two copies): run_conf_qrs_one compares each site's
+    # multiplicity with the general position, group[0], to spot special sites
+    wp = SimpleNamespace(letter="i", multiplicity=2)
+
+    class _Group(SimpleNamespace):
+        def __getitem__(self, index):
+            return [None, None]
+
     template = SimpleNamespace(
         numMols=[1],
         mol_sites=[SimpleNamespace(type=0, wp=wp)],
         lattice=object(),
-        group=SimpleNamespace(hall_number=HALL_TRICLINIC),
+        group=_Group(hall_number=HALL_TRICLINIC),
         get_zprime=lambda: [1],
     )
 

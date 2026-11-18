@@ -54,3 +54,33 @@ Each run writes `*_precomputed.csv` (signed-log Selling scalars, log λ, log λ\
 density) and a graph sidecar `*_precomputed_graphs.pt` (about
 800 MB for the training split). `--resume` continues an interrupted run; `--max-samples N`
 runs on a subset. Training detects shards through `*_graphs_shards.json`.
+
+## Z′ = 2 tables and the joint training set
+
+`csd-z2/spade_train.csv` and `csd-z2/spade_test.csv` (8,234 / 2,164 crystals) hold CSD crystals
+with Z′ = 2 whose two independent molecules are the same compound. They were selected with the
+SPaDe-CSP filters above (organic, not polymeric, no solvent, R < 10 %; elements C H N O S P F
+Cl Br I) by `scripts/collect_csd_zprime.py`, which needs the CSD Python API, and split 80 / 20 by
+`scripts/build_dataset.py` (seed 42). They have the same columns as above, with `zprime` = 2.
+
+The joint flow (`checkpoints/cellnet_flow_z12/`) and the space-group and density model
+(`checkpoints/aux_sg_density/`) were trained on the joint tables:
+
+```bash
+python scripts/build_joint_dataset.py
+```
+
+The script compares molecules by InChIKey, ignoring stereo, and
+
+1. removes the molecules in `benchmark_exclude_inchikeys.txt` (40 CSP test targets) from all
+   training rows (90 Z′ = 1 rows);
+2. removes the Z′ = 2 training rows whose molecule is in the Z′ = 1 test split (185 rows; the
+   shipped `csd-z2/spade_train.csv` is already cleaned);
+3. leaves both test splits unchanged.
+
+This gives `joint-z12/train.csv`, 143,981 rows (Z′ = 1 135,747 + Z′ = 2 8,234), and
+`joint-z12/test.csv`, 36,605 rows. `joint-z12/build_report.txt` lists the removed rows and the
+final leak check. The caches are built as above (`training/joint_z12/precompute.sh`).
+
+The original Z′ = 1 checkpoint (`checkpoints/cellnet_flow/`) was trained before this cleaning:
+its training rows include 90 crystals of the test targets.

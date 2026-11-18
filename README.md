@@ -17,6 +17,10 @@ reported protocol (64 cells per system) reproduces the experimental structure fo
 fallback; one of those three (XAFPAY) rests on a single marginal match. Per-code results are
 in [`benchmark/results.csv`](benchmark/results.csv).
 
+Since then, CellNet also runs [blind](#blind-prediction): a flow trained on Z′ = 1 and Z′ = 2
+crystals, a model that predicts the space group and the density from the molecule, molecules on
+special positions (inversion centres, 2-fold axes, mirror planes) and multi-component crystals.
+
 ## How it works
 
 1. **Conditional flow** (`cellnet/models.py`). A GNN encodes the molecular graph; learned
@@ -59,13 +63,24 @@ relaxation. It also needs a `charmm` executable on `PATH`. The paper used OpenFF
 | `cellnet/` | Python package: invariants, flow model, lattice QRS, cell selection, packing pipeline |
 | `scripts/` | Command-line entry points (below) |
 | `checkpoints/cellnet_flow/` | Trained flow (`best.pt`), normalization and Hall vocabulary (`stats.json`), training history |
+| `checkpoints/cellnet_flow_z12/` | Flow trained on Z′ = 1 + 2 (used by the blind scripts) |
+| `checkpoints/aux_sg_density/` | Space-group and density model (used by the blind scripts) |
 | `datasets/spade-csp/` | Training and test tables derived from SPaDe-CSP ([details](datasets/README.md)) |
+| `datasets/csd-z2/` | Z′ = 2 training and test tables from the CSD ([details](datasets/README.md)) |
+| `EM/` | Post-hoc scoring used by the blind jobs: `rematch.py`, `relax_ref.py`, `score_blind.sh`, `cocrystal_status.py` |
+| `training/` | Slurm recipes that trained the two new models |
+| `runtime/` | Start-up hook that applies `cellnet/pyxtal_patches.py` in PyXtal's worker processes |
 | `benchmark/` | Benchmark code list, run and summary scripts, per-code results ([details](benchmark/README.md)) |
 | `tests/` | Unit tests |
 
 | Script | Purpose |
 |--------|---------|
 | `scripts/run_pipeline.py` | Full pipeline (flow → lattice QRS → selection → packing) for one molecule or benchmark code |
+| `scripts/run_blind.py` | Blind CSP from a SMILES: predicted space groups, Z′, densities and special sites, as one Slurm array |
+| `scripts/run_cocrystal.py` | The same for multi-component crystals (formula-unit SMILES) |
+| `scripts/train_aux.py` | Train and evaluate the space-group and density model |
+| `scripts/build_joint_dataset.py` | Leak-free joint Z′ = 1 + 2 tables |
+| `scripts/collect_csd_zprime.py` | Collect Z′ = 2 crystals from the CSD (needs the CSD Python API) |
 | `scripts/validate_flow.py` | K-sample validation of the flow on the test split |
 | `scripts/train_flow.py` | Train the conditional flow |
 | `scripts/build_dataset.py` | Rebuild the training tables from the SPaDe-CSP release |
@@ -118,6 +133,62 @@ The experimental structures come from `test.db`, which ships with PyXtal
 (`pyxtal/database/test.db`); the scripts use it automatically. See
 [`benchmark/README.md`](benchmark/README.md) for the protocol, cost and caveats.
 
+## Blind prediction
+
+The benchmark protocol is given the experimental space group and Z′. The blind scripts start
+from the SMILES alone:
+
+- **Space group and density.** `checkpoints/aux_sg_density/` (`cellnet/aux_model.py`) gives
+  p(Hall, Z′ | molecule) and a three-Gaussian density distribution for a given molecule, Hall
+  setting and Z′. On the test molecules the right setting is among the top 1 / 3 / 5 / 10 for
+  31.4 / 66.7 / 79.4 / 90.8 % (always guessing the most common settings: 21.6 / 54.0 / 76.2 /
+  88.8 %). The mean density is off by 1.7 %, and the central 95 % interval holds 94.5 % of the test
+  crystals (`checkpoints/aux_sg_density/test_metrics.json`). Each flow draw gets its own density
+  from this distribution (`run_pipeline.py --aux-checkpoint`).
+- **Z′ = 2.** `checkpoints/cellnet_flow_z12/` was trained from scratch on the Z′ = 1 tables plus
+  8,234 Z′ = 2 crystals, with the test-target molecules removed ([details](datasets/README.md)). On
+  1,000 Z′ = 2 test molecules (K = 100, `scripts/validate_flow.py`), its best-of-100 error on λ
+  (normalised MSE) is 0.036, against 0.337 for the Z′ = 1 model given the same crystals as Z′ = 1;
+  on the Z′ = 1 test the two are the same (0.028 and 0.030). For Z′ = 2, `--z2-pairing` sets how the two copies get their
+  conformers (the blind runs use `alternate`).
+- **Special positions.** Molecules can sit on inversion centres, 2-fold axes or mirror planes
+  (`run_pipeline.py --wyckoff`, `--keep-special-sites`). A site symmetry is used only if
+  conformers of the molecule can have it; for inversion centres exact centrosymmetric
+  conformers are built. These runs use PyXtal's DFS search, since its QRS cannot place molecules
+  on special sites.
+- **No experimental template.** The packing template is a random placement in the chosen
+  setting (`--random-template`), and the search never reads the reference
+  (`--strict-posthoc-search`).
+
+```bash
+# plan only: the settings taken, their probabilities and boxes
+python scripts/run_blind.py MYMOL --smiles "<SMILES>" --plan-only \
+  --sg-top-p 0.9 --max-halls 10 --total-boxes 192 --min-boxes 12
+# write the task scripts and submit one Slurm array
+python scripts/run_blind.py MYMOL --smiles "<SMILES>" --submit --partition <partition> --constraint "" \
+  --sg-top-p 0.9 --max-halls 10 --total-boxes 192 --min-boxes 12
+```
+
+The most probable Hall settings are taken until they cover 90 % of p(Hall). The boxes are split
+between them in proportion to p, with Z′ = 1 and 2 in each, and special-site runs are added
+(`--special auto`). Each run is cut into array tasks of at most `--chunk-boxes` boxes. The
+`--partition`, `--constraint`, `--cpus` and `--mem` defaults are for our cluster. Results go to
+`EM_blind/<CODE>/sg_*/` (`--out`).
+
+To score a blind run against a known structure, give `--db` (a PyXtal database holding the CSD
+entry) instead of `--smiles`. Each task then compares its structures with the experiment once its
+search has ended. After the whole array, `EM/score_blind.sh` compares them again, both with the
+experiment and with the experiment relaxed by the same force field (`EM/relax_ref.py`), which
+separates search misses from force-field drift.
+
+Cocrystals and salts use `scripts/run_cocrystal.py --targets targets.json`, a JSON object
+`{"NAME": {"smiles": "<A>.<B>.<B>", "ref_cif": "<path>"}, ...}`: the formula unit with its
+stoichiometry written out, and a reference CIF that is read only for scoring. Each component goes on general
+positions or on special sites of one site symmetry. `python EM/cocrystal_status.py --dir <out>`
+summarises the results. `cellnet/pyxtal_patches.py` fixes a PyXtal bug that gave a later
+component the previous component's molecule. It is applied on import and, for PyXtal's spawned
+workers, through `runtime/sitecustomize.py`, which the generated jobs put on `PYTHONPATH`.
+
 ## Retraining
 
 ```bash
@@ -136,6 +207,17 @@ trained with (`torch.load(...)["args"]`); entries such as `shape_bins` or
 `shape_retrieval_blend` belong to an experimental model that is not part of this release and
 were inactive for the shipped one. To rebuild the tables themselves from the SPaDe-CSP release, see
 [`datasets/README.md`](datasets/README.md).
+
+The two blind-mode models:
+
+```bash
+python scripts/build_joint_dataset.py   # datasets/joint-z12/{train,test}.csv and build_report.txt
+bash training/joint_z12/submit.sh       # precompute the caches (CPU), then train the flow (GPU)
+sbatch training/aux/train_aux.sh        # space-group and density model
+```
+
+Both write to `outputs/`. The blind scripts use the shipped checkpoints unless given
+`--checkpoint` and `--aux-checkpoint`.
 
 ## Tests
 

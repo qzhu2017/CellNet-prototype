@@ -16,3 +16,13 @@ datasets/test.db
 .vscode/
 .DS_Store
 *.swp
+
+# Joint Z′ = 1 + 2 tables and caches: rebuilt by scripts/build_joint_dataset.py and precompute
+datasets/joint-z12/*
+!datasets/joint-z12/build_report.txt
+datasets/csd-z2/*_precomputed*
+
+# Default output folders of scripts/run_blind.py and scripts/run_cocrystal.py; training logs
+EM_blind/
+EM_cocrystal/
+training/**/*.out

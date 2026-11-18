@@ -1,0 +1,20 @@
+{
+ "sg_top1": 0.31375683634833823,
+ "sg_top1_baseline": 0.21567802552236712,
+ "sg_top3": 0.6671995512550835,
+ "sg_top3_baseline": 0.5402327864254662,
+ "sg_top5": 0.7937175711681391,
+ "sg_top5_baseline": 0.7616042630767074,
+ "sg_top10": 0.9075585471883326,
+ "sg_top10_baseline": 0.8879259570887673,
+ "sg_p90_set_size_median": 9.0,
+ "sg_p90_set_coverage": 0.899845743934932,
+ "n_test_molecules": 35655,
+ "density_mae_pct": 1.7294615432755567,
+ "density_sigma_pct_median": 2.832979182706774,
+ "density_nll": -0.09632872053974131,
+ "density_cover_50": 0.4852459016393443,
+ "density_cover_68": 0.6660109289617486,
+ "density_cover_95": 0.9447814207650274,
+ "n_test_crystals": 36600
+}

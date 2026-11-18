@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from cellnet.data import (
+    attach_log_density,
     CrystalGraphDataset,
     attach_lattice_invariants,
     attach_selling_targets,
@@ -156,6 +157,7 @@ def main() -> None:
     samples = load_structure_csv(args.csv)
     attach_selling_targets(samples, verbose=False)
     attach_lattice_invariants(samples, verbose=False)
+    attach_log_density(samples)  # true density target; without it every true value was 0
     samples = graphify_samples(samples, verbose=False)
     if args.max_samples is not None and len(samples) > args.max_samples:
         rng = np.random.default_rng(42)

@@ -130,9 +130,9 @@ def _sample_from_spade_row(row: dict[str, str], csv_path: Path):
     )
 
 
-def _try_load_from_db(db_path: Path, csd_code: str, *, label: str):
+def _try_load_from_db(db_path: Path, csd_code: str, *, label: str, keep_special: bool = False):
     try:
-        db_info = load_crystal_from_db(db_path, csd_code)
+        db_info = load_crystal_from_db(db_path, csd_code, keep_special=keep_special)
     except ValueError:
         return None
     print(f"Loaded {csd_code} from {db_info.db_path} (SG #{db_info.space_group_number}){label}")
@@ -147,6 +147,7 @@ def _resolve_crystal_metadata(
     smiles_override: str | None,
     hall_override: int | None,
     zprime_override: float | None,
+    keep_special: bool = False,
 ) -> tuple[str, int, float, np.ndarray | None, Path | None, bool]:
     """
     Resolve SMILES, Hall, Z′, and true cellpar.
@@ -181,7 +182,7 @@ def _resolve_crystal_metadata(
         )
 
     if db_path is not None:
-        db_info = load_crystal_from_db(db_path, csd_code)
+        db_info = load_crystal_from_db(db_path, csd_code, keep_special=keep_special)
         print(f"Loaded {csd_code} from {db_info.db_path} (SG #{db_info.space_group_number})")
         return _from_db(
             db_info,
@@ -191,7 +192,9 @@ def _resolve_crystal_metadata(
 
     # 1) Prefer test.db when present (benchmark / reference structures).
     if DEFAULT_TEST_DB.is_file():
-        db_info = _try_load_from_db(DEFAULT_TEST_DB, csd_code, label="")
+        db_info = _try_load_from_db(
+            DEFAULT_TEST_DB, csd_code, label="", keep_special=keep_special
+        )
         if db_info is not None:
             return _from_db(db_info, from_test_db=True, path=DEFAULT_TEST_DB.resolve())
 
@@ -505,7 +508,100 @@ def main() -> None:
             "The CSD-derived molecular/Wyckoff template is still used; evaluate artifacts post-hoc"
         ),
     )
+    parser.add_argument(
+        "--scale-cells-volume",
+        type=float,
+        default=None,
+        metavar="A3",
+        help=(
+            "Diagnostic, not cell-blind: after selection, scale every selected cell "
+            "isotropically to this conventional-cell volume (Å^3) before conformational QRS. "
+            "Shapes are kept; unique_cells.csv keeps the unscaled cells, conf_qrs.csv the scaled ones"
+        ),
+    )
+    parser.add_argument(
+        "--aux-checkpoint",
+        type=str,
+        default=None,
+        help="Auxiliary space-group/density model (scripts/train_aux.py). Each flow draw then "
+        "gets its own density sampled from p(rho | molecule, Hall, Z') instead of one shared value.",
+    )
+    parser.add_argument(
+        "--random-template",
+        action="store_true",
+        help="Build the packing template from a random placement in --hall/--zprime instead of "
+        "the CSD entry (the entry is then used only for matching). Needed when the run's space "
+        "group differs from the experimental one, e.g. blind space-group runs.",
+    )
+    parser.add_argument(
+        "--keep-special-sites",
+        action="store_true",
+        help="Keep a molecule on a special position (e.g. a 2-fold axis) in the crystal's own "
+        "group instead of moving it to a subgroup with a general position. Z′ may then be "
+        "fractional (Fdd2 Z′ = 0.5) and the conformer pool is limited to conformers with "
+        "the site's symmetry.",
+    )
+    parser.add_argument(
+        "--wyckoff",
+        type=str,
+        default=None,
+        metavar="LABEL[,LABEL][;LABEL...]",
+        help="Put every molecule on this Wyckoff site (e.g. 8a) of --hall, with a random "
+        "template (no CSD coordinates). A comma list puts one molecule on each of several "
+        "different sites with the same site symmetry, e.g. 2b,2c in P2_1/c (two molecules on "
+        "two inversion centres, Z′ = 1). Use with --hall and --zprime for blind "
+        "special-position runs; implies --keep-special-sites. Cocrystals (--smiles with the "
+        "formula unit, e.g. 'A.B.B'): one ';'-separated site group per distinct component, e.g. "
+        "'4e;4e' (both general) or '2a;4e' (A on an inversion centre).",
+    )
+    parser.add_argument(
+        "--conf-slice",
+        default=None,
+        metavar="I/N",
+        help="split one run over N jobs: select the boxes as usual (same --seed), then run "
+        "only boxes I, I+N, I+2N, ... (0-based); use a separate --tag per slice",
+    )
+    parser.add_argument(
+        "--z2-pairing",
+        choices=["same", "mirror", "twin", "alternate"],
+        default="same",
+        help="Z′ = 2 general-position runs: 'same' puts one conformer on both copies (PyXtal "
+        "QRS default); 'twin' gives each copy its own conformer from one cluster of similar "
+        "conformers; 'mirror' gives copy 2 the mirror images of copy 1's cluster (e.g. the "
+        "(+,+)/(-,-) propeller pair of OSEWEQ); 'alternate' cycles mirror/twin over the boxes "
+        "(and the conformer clusters).",
+    )
+    parser.add_argument(
+        "--density-ladder",
+        type=str,
+        default=None,
+        metavar="R1,R2,...",
+        help=(
+            "Cell-blind density ladder: after selection, copy each selected cell at "
+            "densities R × predicted ρ (isotropic scaling, shapes kept), e.g. "
+            "1.0,0.88,0.77,0.68,0.6,0.52,0.45. Rung i of cell k runs as conf_qrs_<k + 1000·i>"
+        ),
+    )
+    parser.add_argument(
+        "--ladder-cells",
+        type=int,
+        default=None,
+        help="With --density-ladder, keep only the first N selected cells (default: all)",
+    )
     args = parser.parse_args()
+    if args.wyckoff:
+        args.keep_special_sites = True
+        if args.hall is None or args.zprime is None:
+            parser.error("--wyckoff needs --hall and --zprime (the site and Z′ must fit the group)")
+    if args.density_ladder is not None and args.scale_cells_volume is not None:
+        parser.error("--density-ladder and --scale-cells-volume are mutually exclusive")
+    if args.density_ladder is not None:
+        try:
+            args.density_ladder = [float(x) for x in args.density_ladder.split(",") if x.strip()]
+        except ValueError:
+            parser.error("--density-ladder must be comma-separated numbers")
+        if not args.density_ladder or any(not 0.1 <= r <= 2.0 for r in args.density_ladder):
+            parser.error("--density-ladder ratios must lie in [0.1, 2.0]")
     if args.ff_name:
         # Must be set before pyocse is imported anywhere in this process; spawned
         # QRS workers inherit the environment.
@@ -546,6 +642,7 @@ def main() -> None:
             smiles_override=args.smiles,
             hall_override=args.hall,
             zprime_override=args.zprime,
+            keep_special=args.keep_special_sites,
         )
         if resolved_db is not None:
             db_path = resolved_db
@@ -574,6 +671,12 @@ def main() -> None:
         print(f"Flow NPZ:   {Path(args.flow_npz).resolve()}  (checkpoint skipped)")
     print(f"SMILES: {smiles}")
     print(f"Hall:   {hall}   Z′: {zprime}")
+    if args.keep_special_sites or args.wyckoff:
+        print(
+            "Special positions: kept"
+            + (f" (every molecule on Wyckoff {args.wyckoff}, random template)" if args.wyckoff else " (sites from the CSD template)"),
+            flush=True,
+        )
     try:
         import pyocse.forcefield as _pf
 
@@ -604,10 +707,18 @@ def main() -> None:
             zprime,
             k=args.k,
             seed=args.seed,
+            aux_checkpoint=args.aux_checkpoint,
         )
         save_flow_batch(flow, flow_npz, seed=args.seed)
         print(f"  saved flow draws → {flow_npz}")
     print(f"  predicted ρ = {flow.target_rho:.4f} g/cm³")
+    if flow.draw_rho is not None:
+        q = np.percentile(flow.draw_rho, [5, 50, 95])
+        print(
+            f"  per-draw ρ from the density mixture: 5/50/95% = {q[0]:.3f} / {q[1]:.3f} / {q[2]:.3f} g/cm³"
+            f" (min {flow.draw_rho.min():.3f}, max {flow.draw_rho.max():.3f})",
+            flush=True,
+        )
     lam = np.exp(flow.all_log_lambda)
     print(
         f"  λ range (Å): [{lam.min():.2f}, {lam.max():.2f}]  "
@@ -709,7 +820,8 @@ def main() -> None:
         return
 
     ref_pmg = (
-        _load_ref_pmg(tag, db_path=db_path)
+        # look the reference up by CSD code, not by --tag (run_blind.py tags runs sg_<hall>_z<zp>)
+        _load_ref_pmg(args.csd_code or tag, db_path=db_path)
         if match_ref and not args.strict_posthoc_search
         else None
     )
@@ -851,6 +963,68 @@ def main() -> None:
             f"disagree={args.conf_disagree}, {sel_note})"
         )
 
+    if args.scale_cells_volume is not None:
+        import dataclasses
+
+        from cellnet.packing import cell_volume
+
+        scaled = []
+        for u in targets:
+            f = (args.scale_cells_volume / float(cell_volume(u.cellpar))) ** (1.0 / 3.0)
+            cp = np.array(u.cellpar, dtype=float).copy()
+            cp[:3] *= f
+            scaled.append(dataclasses.replace(u, cellpar=cp))
+        facs = [float(s.cellpar[0] / u.cellpar[0]) for s, u in zip(scaled, targets)]
+        targets = scaled
+        print(
+            f"\n  Scaled {len(targets)} selected cells to V = {args.scale_cells_volume:.1f} Å³ "
+            f"(length factors {min(facs):.3f}–{max(facs):.3f})",
+            flush=True,
+        )
+
+    if args.density_ladder is not None:
+        import dataclasses
+
+        from cellnet.packing import cell_volume
+
+        # Blind: rungs are multiples of the model's own predicted density, so the
+        # experimental cell never enters. Cell-major order, so a run that hits the
+        # time limit has still tried every density on its first cells.
+        base = targets[: args.ladder_cells] if args.ladder_cells else targets
+        v_pred = target_volume_from_density(flow.target_rho, smiles, zprime, hall)
+        laddered = []
+        too_long = 0
+        for u in base:
+            channel = selection_provenance.get(u.dedup_idx, args.conf_selection)
+            for i, r in enumerate(args.density_ladder):
+                f = (v_pred / r / float(cell_volume(u.cellpar))) ** (1.0 / 3.0)
+                cp = np.array(u.cellpar, dtype=float).copy()
+                cp[:3] *= f
+                if cp[:3].max() >= 50.0:
+                    # pyxtal's CHARMM interface skips every structure with an edge >= 50 Å
+                    too_long += 1
+                    continue
+                idx = u.dedup_idx + 1000 * i
+                laddered.append(dataclasses.replace(u, dedup_idx=idx, cellpar=cp))
+                selection_provenance[idx] = f"{channel}|rho_x{r:g}"
+        targets = laddered
+        rho_list = ", ".join(f"{flow.target_rho * r:.3f}" for r in args.density_ladder)
+        print(
+            f"\n  Density ladder: {len(base)} cells × {len(args.density_ladder)} rungs = "
+            f"{len(targets)} runs at ρ = {rho_list} g/cm³ "
+            f"(predicted ρ={flow.target_rho:.4f})"
+            + (f"; skipped {too_long} copies with an edge >= 50 Å" if too_long else ""),
+            flush=True,
+        )
+
+    if args.conf_slice:
+        # chunked run: every chunk repeats the (seeded) lattice stage and keeps every N-th box
+        i_slice, n_slice = (int(x) for x in args.conf_slice.split("/"))
+        n_all = len(targets)
+        targets = targets[i_slice::n_slice]
+        print(f"\n  conf slice {i_slice}/{n_slice}: boxes {i_slice}, {i_slice + n_slice}, ... "
+              f"({len(targets)} of {n_all})", flush=True)
+
     relax_mode = "coordinates + lattice" if args.relax_lattice else "coordinates only"
     stability_mode = "stability checks on" if args.conf_check_stable else "stability checks off"
     print(
@@ -864,7 +1038,11 @@ def main() -> None:
     def _run_conf_sweep(relax_lattice: bool, schedule_root: Path) -> list[ConfQRSRecord]:
         """One full conformational-QRS pass over every selected cell."""
         produced: list[ConfQRSRecord] = []
-        for u in targets:
+        for box_i, u in enumerate(targets):
+            if args.z2_pairing == "alternate":
+                pairing, pair_box = ("mirror", "twin")[box_i % 2], box_i // 2
+            else:
+                pairing, pair_box = args.z2_pairing, box_i
             cp = u.cellpar
             channel = selection_provenance.get(u.dedup_idx, args.conf_selection)
             schedule = conf_restart_schedule(
@@ -890,7 +1068,11 @@ def main() -> None:
                         zprime,
                         cp,
                         workdir,
-                        csd_code=tag if args.csd_code else None,
+                        # --wyckoff builds its own template on that site; the CSD entry
+                        # (if any) is then used only for matching.
+                        csd_code=(
+                            tag if args.csd_code and not args.wyckoff and not args.random_template else None
+                        ),
                         db_path=db_path,
                         ref_pmg=ref_pmg,
                         ngen=args.conf_ngen,
@@ -904,6 +1086,10 @@ def main() -> None:
                         relax_lattice=relax_lattice,
                         check_stable=args.conf_check_stable,
                         enable_reference_matching=not args.strict_posthoc_search,
+                        keep_special=args.keep_special_sites,
+                        wyckoff=args.wyckoff,
+                        z2_pairing=None if pairing == "same" else pairing,
+                        pair_box=pair_box,
                     )
                     print(
                         f"    done: success_rate={rec.success_rate}  "
@@ -926,6 +1112,9 @@ def main() -> None:
                         relax_lattice=relax_lattice,
                     )
                     print(f"    FAILED: {exc}", flush=True)
+                    if os.environ.get("CELLNET_TRACEBACK"):
+                        import traceback
+                        traceback.print_exc()
                 produced.append(rec)
                 result.conf_qrs.append(rec)
                 save_pipeline_artifacts(result, out_dir, flow_seed=args.seed)
